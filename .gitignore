@@ -8,5 +8,4 @@ wheels/
 
 # Virtual environments
 .venv
-1*
-recorded_data
+recorded_data/1*
