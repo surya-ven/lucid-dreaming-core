@@ -5,124 +5,125 @@ from scipy import signal
 from sklearn.decomposition import FastICA
 # import matplotlib.pyplot as plt # Uncomment for debugging plots
 
-# Please ensure this is your actual product key
 PRODUCT_KEY = "RUtYA4W3kpXi0i9C7VZCQJY5_GRhm4XL2rKp6cviwQI="
-DEVICE_ID = "FRENZI40"  # Please ensure this is your actual device ID
+DEVICE_ID = "FRENZI40"
 
 # --- EEG Preprocessing Parameters ---
-FS = 250
+# !!! IMPORTANT: Based on your terminal output, FS appears to be around 126 Hz.
+# (e.g., (225 samples - 99 samples) / (9.25s - 8.24s) approx = 126 samples/sec)
+# PLEASE VERIFY THIS with official FRENZ Brainband specs. This is CRITICAL.
+FS = 126.0  # Sampling Frequency in Hz (Observed, NEEDS VERIFICATION)
+
 NOTCH_FREQ = 50.0
 NOTCH_QUALITY_FACTOR = 30.0
 BANDPASS_LOWCUT = 0.5
+# Max useful EEG is often around 40-50Hz. FS/2 is Nyquist.
 BANDPASS_HIGHCUT = 40.0
-BANDPASS_ORDER = 5
-ICA_N_COMPONENTS = None
+# If FS = 126, Nyquist = 63Hz. So 40Hz is fine.
+BANDPASS_ORDER = 4  # Lowered order slightly, can be tuned.
+ICA_N_COMPONENTS = 4  # We expect 4 EEG channels after selection
 ICA_RANDOM_STATE = 42
 
-# --- Preprocessing Functions (with added robustness for empty channel data) ---
+# Indices of the 4 relevant EEG channels from the 6 columns provided by the SDK
+# (assuming columns 2 and 5 are the zero-padded ones as per your description)
+EEG_COLUMN_INDICES = [0, 1, 3, 4]
 
+
+# --- Preprocessing Functions (expect data as [num_channels, num_samples]) ---
 
 def apply_notch_filter(data, fs, notch_freq, quality_factor):
+    # Data is expected as [num_channels, num_samples]
     if data is None or data.ndim < 2 or data.shape[0] == 0 or data.shape[1] == 0:
-        print("Notch Filter: Invalid or empty data provided.")
-        return data  # Return original or empty data
+        print("Notch Filter: Invalid or empty channel/sample data provided.")
+        return data
     filtered_data = np.copy(data)
+    # Design filter once
     b_notch, a_notch = signal.iirnotch(notch_freq, quality_factor, fs)
-    for i in range(filtered_data.shape[0]):
-        if filtered_data.shape[1] > 0:  # Ensure samples exist for the channel
-            # filtfilt requires len(x) > padlen which is 3 * max(len(a), len(b)).
-            # For iirnotch, len(a) and len(b) are 3. So padlen is 9.
-            if filtered_data.shape[1] > 3 * max(len(a_notch), len(b_notch)):
-                filtered_data[i, :] = signal.filtfilt(
-                    b_notch, a_notch, filtered_data[i, :])
-            else:
-                print(
-                    f"Notch Filter: Not enough samples ({filtered_data.shape[1]}) in channel {i} for filtfilt. Skipping.")
+    padlen_notch = 3 * max(len(a_notch), len(b_notch))
+
+    for i in range(filtered_data.shape[0]):  # Iterate over channels
+        if filtered_data.shape[1] > padlen_notch:
+            filtered_data[i, :] = signal.filtfilt(
+                b_notch, a_notch, filtered_data[i, :])
+        else:
+            print(
+                f"Notch Filter: Not enough samples ({filtered_data.shape[1]}) in channel {i} for filtfilt (padlen {padlen_notch}). Skipping channel.")
     return filtered_data
 
 
 def apply_bandpass_filter(data, fs, lowcut, highcut, order):
+    # Data is expected as [num_channels, num_samples]
     if data is None or data.ndim < 2 or data.shape[0] == 0 or data.shape[1] == 0:
-        print("Band-pass Filter: Invalid or empty data provided.")
+        print("Band-pass Filter: Invalid or empty channel/sample data provided.")
         return data
     filtered_data = np.copy(data)
     nyquist_freq = 0.5 * fs
     low = lowcut / nyquist_freq
     high = highcut / nyquist_freq
 
-    if high >= 1.0:
-        high = 0.99
+    if high >= 1.0:  # Ensure highcut is less than Nyquist
         print(
-            f"Warning: highcut frequency {highcut}Hz is too high for Nyquist {nyquist_freq}Hz. Clamped to {high*nyquist_freq}Hz.")
-    if low <= 0:  # Low cut must be > 0 for bandpass
-        low = 0.001  # A very small positive number
+            f"Warning: highcut frequency {highcut}Hz is >= Nyquist {nyquist_freq}Hz. Clamping highcut.")
+        # Clamp slightly below Nyquist
+        high = 0.999 * (nyquist_freq - 0.1) / nyquist_freq
+        if high <= low:
+            high = low + 0.01  # ensure high > low
+    if low <= 0:
         print(
-            f"Warning: lowcut frequency {lowcut}Hz is too low. Clamped to {low*nyquist_freq}Hz.")
+            f"Warning: lowcut frequency {lowcut}Hz is <= 0. Clamping lowcut.")
+        low = 0.001  # A very small positive number relative to Nyquist
     if low >= high:
         print(
-            f"Warning: Band-pass lowcut {lowcut}Hz is >= highcut {highcut}Hz. Skipping bandpass filter.")
+            f"Warning: Band-pass lowcut ({lowcut}Hz) is >= highcut ({highcut}Hz after adjustments). Skipping bandpass filter.")
         return data
 
     b_bandpass, a_bandpass = signal.butter(order, [low, high], btype='band')
-    for i in range(filtered_data.shape[0]):
-        if filtered_data.shape[1] > 0:  # Ensure samples exist for the channel
-            # Check padlen for filtfilt for butterworth filter
-            padlen = 3 * max(len(a_bandpass), len(b_bandpass))
-            if filtered_data.shape[1] > padlen:
-                filtered_data[i, :] = signal.filtfilt(
-                    b_bandpass, a_bandpass, filtered_data[i, :])
-            else:
-                print(
-                    f"Band-pass Filter: Not enough samples ({filtered_data.shape[1]}) in channel {i} for filtfilt (padlen {padlen}). Skipping.")
+    padlen_bandpass = 3 * max(len(a_bandpass), len(b_bandpass))
+
+    for i in range(filtered_data.shape[0]):  # Iterate over channels
+        if filtered_data.shape[1] > padlen_bandpass:
+            filtered_data[i, :] = signal.filtfilt(
+                b_bandpass, a_bandpass, filtered_data[i, :])
+        else:
+            print(
+                f"Band-pass Filter: Not enough samples ({filtered_data.shape[1]}) in channel {i} for filtfilt (padlen {padlen_bandpass}). Skipping channel.")
     return filtered_data
 
 
-def apply_adaptive_filter_stub(data, eeg_channels_for_emg_removal=None, emg_reference_channels=None):
+def apply_adaptive_filter_stub(data):
+    # Data is expected as [num_channels, num_samples]
     print("Skipping adaptive EMG filter (stub function).")
     if data is None or data.ndim < 2 or data.shape[0] == 0 or data.shape[1] == 0:
         return data
     return data
 
 
-def apply_ica_eog_removal_stub(data, n_components, random_state, eeg_channel_indices=None):
-    print("Attempting ICA for EOG removal (stub function). This requires careful implementation.")
+def apply_ica_eog_removal_stub(data, n_components, random_state):
+    # Data is expected as [num_channels, num_samples]
+    print("Attempting ICA for EOG removal (stub function).")
     if data is None or data.ndim < 2 or data.shape[0] == 0 or data.shape[1] < 2:
-        print("ICA: Invalid, empty, or insufficient data for ICA.")
+        print("ICA: Invalid, empty, or insufficient sample data for ICA.")
         return data
 
-    num_channels_available = data.shape[0]
+    num_actual_channels = data.shape[0]
     num_samples_available = data.shape[1]
 
-    # Determine the actual number of components for ICA
     current_n_components = n_components
-    if current_n_components is None or current_n_components > num_channels_available:
-        current_n_components = num_channels_available
+    if current_n_components is None or current_n_components > num_actual_channels:
+        # Default to number of available channels
+        current_n_components = num_actual_channels
 
-    if current_n_components == 0:  # No channels to perform ICA on
+    if current_n_components == 0:
         print("ICA: No channels available for ICA (current_n_components is 0). Skipping.")
         return data
-    if num_samples_available < current_n_components:
+    # Heuristic: need at least e.g. 2x samples as components
+    if num_samples_available < current_n_components * 2:
         print(
             f"ICA: Not enough samples ({num_samples_available}) for {current_n_components} ICA components. Skipping ICA.")
         return data
 
-    # Transpose data for ICA: (n_samples, n_features/channels)
-    eeg_data_for_ica = data.T  # Assuming all channels in 'data' are to be used by default
-    if eeg_channel_indices:  # If specific indices are provided
-        if not all(idx < num_channels_available for idx in eeg_channel_indices):
-            print("ICA: Invalid eeg_channel_indices. Skipping.")
-            return data
-        eeg_data_for_ica = data[eeg_channel_indices, :].T
-        # Update current_n_components if it was based on all channels but now we have a subset
-        if n_components is None or n_components > eeg_data_for_ica.shape[1]:
-            current_n_components = eeg_data_for_ica.shape[1]
-        if current_n_components == 0:
-            print("ICA: No channels selected via eeg_channel_indices. Skipping.")
-            return data
-        if num_samples_available < current_n_components:
-            print(
-                f"ICA: Not enough samples ({num_samples_available}) for {current_n_components} ICA components with selected channels. Skipping ICA.")
-            return data
+    # FastICA expects data as (n_samples, n_features/channels)
+    eeg_data_for_ica = data.T
 
     try:
         ica = FastICA(n_components=current_n_components,
@@ -132,16 +133,7 @@ def apply_ica_eog_removal_stub(data, n_components, random_state, eeg_channel_ind
         sources = ica.fit_transform(eeg_data_for_ica)
         print(
             f"ICA: Fitted successfully. Identified {sources.shape[1]} sources.")
-        # Actual EOG component identification and removal is complex and not implemented in this stub.
-        # Conceptually, you would modify 'sources' and then:
-        # cleaned_eeg_data_ica_transformed = ica.inverse_transform(sources_with_eog_removed)
-        # if eeg_channel_indices:
-        #     # Reconstruct original data shape if a subset of channels was used
-        #     reconstructed_data = np.copy(data)
-        #     reconstructed_data[eeg_channel_indices, :] = cleaned_eeg_data_ica_transformed.T
-        #     return reconstructed_data
-        # else:
-        #     return cleaned_eeg_data_ica_transformed.T
+        # Actual EOG component identification and removal is complex.
         return data  # Placeholder: return original data as removal is complex
     except Exception as e:
         print(f"ICA: Error during processing: {e}")
@@ -150,7 +142,8 @@ def apply_ica_eog_removal_stub(data, n_components, random_state, eeg_channel_ind
 
 # --- Main Streaming and Processing Loop ---
 if __name__ == "__main__":
-    print(f"Attempting to connect to Frenz Brainband: {DEVICE_ID}")
+    print(
+        f"Attempting to connect to Frenz Brainband: {DEVICE_ID} with FS={FS}Hz")
     streamer = Streamer(
         device_id=DEVICE_ID,
         product_key=PRODUCT_KEY,
@@ -163,81 +156,86 @@ if __name__ == "__main__":
         print("Streamer started successfully.")
 
         while True:
-            if streamer.session_dur > 10*60:
+            if streamer.session_dur > 10*60:  # Run for 10 minutes
                 print("Desired session duration reached.")
                 break
 
-            raw_eeg_data = streamer.DATA["RAW"]["EEG"]
+            # raw_sdk_eeg_data shape is (num_samples, num_raw_columns=6)
+            raw_sdk_eeg_data = streamer.DATA["RAW"]["EEG"]
 
-            # --- Robust check for valid EEG data ---
-            # e.g. require at least 10 samples
-            if raw_eeg_data is None or raw_eeg_data.ndim < 2 or raw_eeg_data.shape[0] == 0 or raw_eeg_data.shape[1] < 10:
+            # --- Robust check for valid SDK output ---
+            # Expects (num_samples, 6_columns_from_sdk)
+            min_samples_to_process = 10  # Arbitrary small number of samples to start processing
+            if (raw_sdk_eeg_data is None or
+                    raw_sdk_eeg_data.ndim < 2 or
+                    # Check for expected 6 columns
+                    raw_sdk_eeg_data.shape[1] != 6 or
+                    raw_sdk_eeg_data.shape[0] < min_samples_to_process):
                 print(
-                    f"Waiting for valid EEG data. Current shape: {raw_eeg_data.shape if raw_eeg_data is not None else 'None'}. Session time: {streamer.session_dur:.2f}s")
+                    f"Waiting for valid SDK EEG data (expecting X samples, 6 columns). Current shape: {raw_sdk_eeg_data.shape if raw_sdk_eeg_data is not None else 'None'}. Session time: {streamer.session_dur:.2f}s")
                 time.sleep(1)
                 continue
 
+            # --- Select relevant channels and transpose ---
+            # raw_sdk_eeg_data is (num_samples, 6)
+            # We want columns 0, 1, 3, 4 based on user info (indices 2 and 5 are zeros)
+            # Shape: (num_samples, 4)
+            selected_eeg_data_cols = raw_sdk_eeg_data[:, EEG_COLUMN_INDICES]
+
+            # Transpose to (num_channels, num_samples) for filter functions
+            # Shape: (4, num_samples)
+            eeg_for_processing = selected_eeg_data_cols.T
+
             print(
                 f"\n--- Processing EEG data at session time: {streamer.session_dur:.2f}s ---")
-            print(f"Raw EEG data shape: {raw_eeg_data.shape}")
+            print(
+                f"SDK Raw EEG shape: {raw_sdk_eeg_data.shape}, Selected & Transposed EEG shape for processing: {eeg_for_processing.shape}")
 
-            processed_eeg = raw_eeg_data
+            # Pass eeg_for_processing (shape: 4, num_samples) to filters
+            processed_eeg = eeg_for_processing
 
             # 1. Notch Filter
             processed_eeg = apply_notch_filter(
                 processed_eeg, FS, NOTCH_FREQ, NOTCH_QUALITY_FACTOR)
-            # Check if still valid
-            if processed_eeg.shape[0] > 0 and processed_eeg.shape[1] > 0:
-                print(f"EEG shape after Notch Filter: {processed_eeg.shape}")
-            else:
+            if processed_eeg.shape[0] != len(EEG_COLUMN_INDICES) or processed_eeg.shape[1] == 0:
                 print(
-                    "EEG data became invalid after Notch Filter. Skipping further processing in this iteration.")
+                    "EEG data became invalid after Notch Filter. Skipping further processing.")
                 time.sleep(1)
                 continue
+            print(f"EEG shape after Notch Filter: {processed_eeg.shape}")
 
             # 2. Band-pass Filter
             processed_eeg = apply_bandpass_filter(
                 processed_eeg, FS, BANDPASS_LOWCUT, BANDPASS_HIGHCUT, BANDPASS_ORDER)
-            if processed_eeg.shape[0] > 0 and processed_eeg.shape[1] > 0:
+            if processed_eeg.shape[0] != len(EEG_COLUMN_INDICES) or processed_eeg.shape[1] == 0:
                 print(
-                    f"EEG shape after Band-pass Filter: {processed_eeg.shape}")
-            else:
-                print(
-                    "EEG data became invalid after Band-pass Filter. Skipping further processing in this iteration.")
+                    "EEG data became invalid after Band-pass Filter. Skipping further processing.")
                 time.sleep(1)
                 continue
+            print(f"EEG shape after Band-pass Filter: {processed_eeg.shape}")
 
             # 3. Adaptive Filter (Stub)
             processed_eeg = apply_adaptive_filter_stub(processed_eeg)
-            # Shape won't change with stub
+            # Shape won't change
 
             # 4. ICA for EOG Removal (Stub)
-            num_eeg_channels = processed_eeg.shape[0]
-            ica_n_components_to_use = ICA_N_COMPONENTS if ICA_N_COMPONENTS is not None else num_eeg_channels
-
-            # Ensure enough data and channels for ICA before calling
-            # (additional checks are also inside the function)
-            # Heuristic: e.g., 2 seconds or twice components
-            min_samples_for_ica = max(2 * FS, ica_n_components_to_use * 2)
-            if processed_eeg.shape[1] > min_samples_for_ica and num_eeg_channels >= 2 and \
-               (ica_n_components_to_use > 0 and num_eeg_channels >= ica_n_components_to_use):
+            # ICA_N_COMPONENTS is set to 4 (number of EEG channels)
+            # Heuristic
+            if processed_eeg.shape[0] == ICA_N_COMPONENTS and processed_eeg.shape[1] > ICA_N_COMPONENTS * 2:
                 processed_eeg = apply_ica_eog_removal_stub(
-                    processed_eeg, ica_n_components_to_use, ICA_RANDOM_STATE)
+                    processed_eeg, ICA_N_COMPONENTS, ICA_RANDOM_STATE)
             else:
                 print(
-                    f"Not enough data or channels for ICA. Samples: {processed_eeg.shape[1]}/{min_samples_for_ica}, Channels: {num_eeg_channels}/{ica_n_components_to_use if ica_n_components_to_use > 0 else 2 } needed. Skipping ICA.")
-            # Shape might change if ICA was effective and reconstructed. With stub, it won't.
+                    f"Not enough data or channels for ICA. Shape: {processed_eeg.shape}, ICA components: {ICA_N_COMPONENTS}. Skipping ICA.")
 
-            print(
-                f"Final processed EEG data shape to be used for features: {processed_eeg.shape}")
+            print(f"Final processed EEG data shape: {processed_eeg.shape}")
 
-            # --- Guarded print for example data ---
             if processed_eeg.shape[0] > 0 and processed_eeg.shape[1] >= 5:
                 print(
-                    f"Example of first 5 samples from first channel of processed EEG: {processed_eeg[0, :5]}")
+                    f"Example processed EEG (1st chan, 1st 5 samples): {processed_eeg[0, :5]}")
             elif processed_eeg.shape[0] > 0:
                 print(
-                    f"Example of all available samples from first channel: {processed_eeg[0, :]}")
+                    f"Example processed EEG (1st chan, all samples): {processed_eeg[0, :]}")
             else:
                 print("No channel data in processed_eeg to display example.")
 
@@ -245,22 +243,20 @@ if __name__ == "__main__":
             poas = streamer.SCORES.get("poas")
             sleep_stage = streamer.SCORES.get("sleep_stage")
 
-            print(f"Latest POSTURE: {posture}")
-            print(f"Latest POAS: {poas}")
-            print(f"Latest Sleep Stage: {sleep_stage}")
-
+            print(
+                f"Latest POSTURE: {posture}, POAS: {poas}, Sleep Stage: {sleep_stage}")
             time.sleep(5)
 
     except KeyboardInterrupt:
-        print("Session stopped by user (KeyboardInterrupt).")
+        print("Session stopped by user.")
     except Exception as e:
         print(f"An error occurred: {e}")
         import traceback
-        traceback.print_exc()  # Print full traceback for debugging
+        traceback.print_exc()
     finally:
-        print("Stopping streamer and saving data...")
+        print("Stopping streamer...")
         if 'streamer' in locals() and streamer is not None and streamer.is_streaming:
             streamer.stop()
-            print("Streamer stopped. Data should be saved in './recorded_data' if the session ran and data_folder was specified.")
+            print("Streamer stopped. Data should be saved if session ran.")
         else:
             print("Streamer was not active or already stopped.")
