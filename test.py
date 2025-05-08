@@ -21,7 +21,7 @@ while True:
 
     eeg = streamer.DATA["RAW"]["EEG"]
     print("EEG shape:", eeg.shape)
-    print("EEG data:", eeg[:10, :])
+    print("EEG data:", eeg[:5, :])
 
     posture = streamer.SCORES.get("posture")
     poas = streamer.SCORES.get("poas")
