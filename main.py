@@ -3,6 +3,7 @@ import time
 import numpy as np
 from scipy import signal
 from sklearn.decomposition import FastICA
+from alertness_detection import compute_alertness_score
 # import matplotlib.pyplot as plt # Uncomment for debugging plots
 
 PRODUCT_KEY = "RUtYA4W3kpXi0i9C7VZCQJY5_GRhm4XL2rKp6cviwQI="
@@ -162,6 +163,7 @@ if __name__ == "__main__":
 
             # raw_sdk_eeg_data shape is (num_samples, num_raw_columns=6)
             raw_sdk_eeg_data = streamer.DATA["RAW"]["EEG"]
+            filtered_sdk_eeg_data = streamer.DATA["FILTERED"]["EEG"]
 
             # --- Robust check for valid SDK output ---
             # Expects (num_samples, 6_columns_from_sdk)
@@ -238,6 +240,13 @@ if __name__ == "__main__":
                     f"Example processed EEG (1st chan, all samples): {processed_eeg[0, :]}")
             else:
                 print("No channel data in processed_eeg to display example.")
+
+            # detecting alertness using filtered eeg data
+            # data source could be replaced further
+            latest_alertness_score = compute_alertness_score(processed_eeg[:, :4].transpose(), sfreq=FS)
+            print(
+                f"Latest alertness score: {latest_alertness_score:.2f}"
+            )
 
             posture = streamer.SCORES.get("posture")
             poas = streamer.SCORES.get("poas")
