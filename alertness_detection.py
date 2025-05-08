@@ -53,11 +53,12 @@ def compute_alertness_score(data, sfreq=125, win_sec=10, step_sec=1, n_fft=256):
 
     # Define alertness condition: both smoothed ratios above thresholds
     df['alert'] = (df['alpha_theta_smooth'] > 0.4) & (df['beta_theta_smooth'] > 0.3)
+    df['alert_int'] = df['alert'].astype(float)
 
-    # Compute rolling average of alert flag to get a continuous score
-    df['alertness_score'] = df['alert'].rolling(window=20, min_periods=1).mean()
+    # df['alertness_score'] = df['alert'].rolling(window=50, min_periods=1).mean()
+    df['alertness_score_ema'] = df['alert_int'].ewm(span=10, adjust=False).mean()
 
     # Get the latest alertness score
-    latest_score = df['alertness_score'].iloc[-1] if not df.empty else np.nan
+    latest_score = df['alertness_score_ema'].iloc[-1] if not df.empty else np.nan
 
     return df, latest_score
