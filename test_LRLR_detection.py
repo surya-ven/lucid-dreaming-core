@@ -4,6 +4,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 from scipy.signal import butter, filtfilt, medfilt, find_peaks, welch
+import time
+
 
 
 def load_custom_data(session_folder_path):
@@ -311,6 +313,169 @@ def detect_lrlr_in_window(eog_data, srate, seconds, threshold=2, test=False):
     return lrlr_count >= threshold, lrlr_count
 
 
+def detect_REM_in_window(eog_data, srate, seconds, 
+                         activity_threshold=3, 
+                         peak_height_uv=50, 
+                         min_saccade_duration_s=0.05, # Min time from peak1 to peak2 for a saccade
+                         max_saccade_duration_s=1.0,  # Max time from peak1 to peak2 for a saccade
+                         test=False):
+    """
+    Detects REM-like activity in the last N seconds of EOG data.
+    A REM-like event is defined as a pair of opposite polarity peaks
+    occurring within a specified time window.
+
+    Args:
+        eog_data: EOG data with channels in columns (expected in microvolts).
+        srate: Sampling rate in Hz.
+        seconds: Number of seconds of data to check from the end.
+        activity_threshold: Minimum number of REM-like movements summed across all channels
+                             to classify the window as REM.
+        peak_height_uv: Minimum height of individual peaks (µV) to be considered 
+                        part of a REM event. Standard AASM criteria for REMs is >= 50-75uV.
+        min_saccade_duration_s: Minimum duration (in seconds) between the two opposing peaks 
+                                of a saccade-like event.
+        max_saccade_duration_s: Maximum duration (in seconds) between the two opposing peaks 
+                                of a saccade-like event.
+        test: Boolean, if True, prints debug info.
+
+    Returns:
+        bool: True if REM-like activity detected above activity_threshold, False otherwise.
+        int: Total count of detected REM-like movements across all channels.
+    """
+    # Get the window from the last N seconds
+    window_size = int(seconds * srate)
+    if eog_data.ndim == 1: # Handle single channel case
+        eog_data = eog_data[:, np.newaxis]
+        
+    if eog_data.shape[0] < window_size:
+        eog_data_window = eog_data
+    else:
+        eog_data_window = eog_data[-window_size:, :]
+
+    total_rem_like_movements = 0
+
+    # Process each channel
+    for channel_idx in range(eog_data_window.shape[1]):
+        signal = eog_data_window[:, channel_idx]
+
+        if len(signal) < srate:  # Need at least 1 second of data
+            if test: print(f"REM Channel {channel_idx}: Signal too short ({len(signal)} samples).")
+            continue
+        
+        # Basic check for flat signal or excessive NaNs before filtering
+        if np.all(signal == signal[0]) or np.isnan(signal).sum() > 0.1 * len(signal):
+            if test: print(f"Warning: Skipping REM channel {channel_idx} due to flat signal or excessive NaNs.")
+            continue
+
+        # Apply zero-phase bandpass filter (e.g., 0.5-12 Hz for EOG REMs)
+        # AASM guidelines often suggest 0.3Hz high-pass, 35Hz low-pass.
+        # For detecting saccadic components, 0.5-12 Hz is often effective.
+        filtered_signal = signal # Default to original if filtering fails
+        if np.all(np.isfinite(signal)) and np.sum(np.abs(np.diff(signal)) > 2000) < len(signal) * 0.10: # Looser discontinuity check
+            try:
+                b, a = butter(4, [0.5, 12], btype='band', fs=srate)
+                filtered_signal = filtfilt(b, a, signal)
+            except ValueError as e:
+                if test: print(f"Warning: Filtering failed for REM channel {channel_idx}: {e}. Using raw signal.")
+                # filtered_signal remains 'signal'
+        else:
+            if test: print(f"Warning: Skipping filter for REM channel {channel_idx} due to discontinuities or non-finite values.")
+            # filtered_signal remains 'signal'
+
+        # Apply median filter to remove sharp spikes (kernel_size typically odd)
+        # Make kernel size adaptive to sampling rate, e.g., 30-50ms
+        kernel_s = int(0.04 * srate) # e.g. 40ms, results in kernel_size=5 for srate=125Hz
+        if kernel_s % 2 == 0: kernel_s += 1 # Ensure odd
+        kernel_s = max(3, kernel_s) # Minimum kernel size of 3
+
+        if len(filtered_signal) > kernel_s :
+             filtered_signal = medfilt(filtered_signal, kernel_size=kernel_s)
+        else:
+            if test: print(f"Warning: Signal too short for median filter on REM channel {channel_idx}")
+            # Continue with unfiltered or partially filtered signal
+
+        # Find positive and negative peaks
+        # Distance: min time between peaks of the same type (e.g., 0.1s to avoid multiple detections on one wave)
+        min_peak_dist_samples = int(srate * 0.1) 
+        pos_peaks, _ = find_peaks(filtered_signal, height=peak_height_uv, distance=min_peak_dist_samples)
+        neg_peaks, _ = find_peaks(-filtered_signal, height=peak_height_uv, distance=min_peak_dist_samples) # height is positive
+
+        # Combine and sort all peaks by time index
+        events = []
+        for p_idx in pos_peaks: events.append({'index': p_idx, 'type': 'pos', 'value': filtered_signal[p_idx]})
+        for n_idx in neg_peaks: events.append({'index': n_idx, 'type': 'neg', 'value': filtered_signal[n_idx]})
+        
+        events.sort(key=lambda x: x['index'])
+
+        channel_rem_movements = 0
+        # Search for neg-pos or pos-neg patterns (simple saccade-like events)
+        used_peak_indices = set() # To avoid using the same peak in multiple events
+
+        for i in range(len(events) - 1):
+            if events[i]['index'] in used_peak_indices:
+                continue
+
+            event1 = events[i]
+            
+            # Find the next UNUSED event of OPPOSITE polarity
+            for j in range(i + 1, len(events)):
+                if events[j]['index'] in used_peak_indices:
+                    continue
+                
+                event2 = events[j]
+                
+                if event1['type'] != event2['type']: # Opposite polarity
+                    duration_s = (event2['index'] - event1['index']) / srate
+                    
+                    if min_saccade_duration_s <= duration_s <= max_saccade_duration_s:
+                        channel_rem_movements += 1
+                        used_peak_indices.add(event1['index'])
+                        used_peak_indices.add(event2['index']) # Mark both peaks as used
+                        if test:
+                             print(f"  REM Channel {channel_idx}: Found REM-like event: {event1['type']} at {event1['index']/srate:.2f}s ({event1['value']:.1f}uV) -> {event2['type']} at {event2['index']/srate:.2f}s ({event2['value']:.1f}uV), duration {duration_s:.3f}s")
+                        break # Move to the event after event1 (or rather, the outer loop will increment i)
+                # If not opposite or not in duration, keep searching for a partner for event1
+                # If event2 is too far, break inner loop to save computation (implicit in max_saccade_duration_s check)
+                if (event2['index'] - event1['index']) / srate > max_saccade_duration_s:
+                    break
+
+
+        total_rem_like_movements += channel_rem_movements
+        if test:
+            print(f"Channel {channel_idx}: Found {channel_rem_movements} REM-like movements. Peaks: {len(pos_peaks)} pos, {len(neg_peaks)} neg.")
+            # Add plotting logic if needed, similar to plot_single_channel_data
+            # Example: plot_single_channel_data(filtered_signal, srate=srate, REM_events=channel_rem_movements > 0)
+
+    if test:
+        print(f"Total REM-like movements: {total_rem_like_movements}, Threshold: {activity_threshold}")
+
+    return total_rem_like_movements >= activity_threshold, total_rem_like_movements
+
+
+
+# Pcts Missing
+def detect_signal_integrity(eog_data, nchannels, print=False):
+
+    # Check for large jumps in signal
+    pcts = []
+    for channel in range(nchannels):
+        signal = eog_data[:, channel]
+
+        # Check for missing values (NaN or Inf)
+        missing_values = np.isnan(signal) | np.isinf(signal)
+        missing_percentage = np.mean(missing_values) * 100
+        print(f"Channel {channel}: {missing_percentage:.2f}% missing values") if print else None
+        pcts.append(missing_percentage)
+
+        # Check for large jumps that might indicate signal discontinuity
+        if len(signal) > 1:
+            jumps = np.abs(np.diff(signal))
+            large_jumps = jumps > 1000  # Threshold for large jumps
+            large_jump_percentage = np.mean(large_jumps) * 100
+            print(f"Channel {channel}: {large_jump_percentage:.2f}% large jumps") if print else None
+    
+    
+    return sum(pcts)/len(pcts), pcts
 
 
 
@@ -322,8 +487,42 @@ def main():
     print("Length of Data in seconds: ",len(loaded_data)/srate)
 
 
-    ## NOTE: test = TRUE will plot the filtered data and LRLR detection results for each channel.
-    test, count = detect_lrlr_in_window(eog_data, srate, seconds=10, threshold=1, test=True)
+    # # 1. Remove 60 Hz noise using a notch filter/Look to see if this is needed
+    # f, Pxx = welch(eog_data[:, 0], fs=srate) 
+
+    # 2. Zero‑phase band‑pass (0.5–15 Hz)
+    # b, a  = butter(4, [0.5, 15], btype='band', fs=srate)
+    # eog_data    = filtfilt(b, a, eog_data, axis=0)
+
+    # 3. Median filter to kill isolated spikes
+    # eog_data = medfilt(eog_data, kernel_size=(3,1))
+
+
+    ## -- TESTING ALGS -- ##
+
+    s = 10
+    # LRLR detection & time
+    print(f"\nDetecting LRLR patterns in the last {s} seconds of EOG data...")
+    start_time = time.time()
+    test, count = detect_lrlr_in_window(eog_data, srate, seconds=s, threshold=1, test=False)
+    end_time = time.time()
+    execution_time = end_time - start_time # Execution time: 0.0018 seconds; 1.8 ms/milliseconds
+
+    print(f"  --LRLR detected: {test}, Count: {count}")
+    print(f"  --Execution time: {execution_time:.4f} seconds, {1000*execution_time:.4f} ms")
+
+    # REM detection & time
+    print(f"\nDetecting REM patterns in the last {s} seconds of EOG data...")
+    start_time = time.time()
+    REM_test, REM_count = detect_REM_in_window(eog_data, srate, seconds=s, test=False)
+    end_time = time.time()
+    REM_execution_time = end_time - start_time
+
+    print(f"  --REM detected: {REM_test}, Count: {REM_count}")
+    print(f"  --Execution time: {REM_execution_time:.4f} seconds, {1000*REM_execution_time:.4f} ms")
+
+
+    # # Plot the channels
     # plot_eeg_eog_data(eog_data, session_metadata, colstart=0, colend=4)
 
 
