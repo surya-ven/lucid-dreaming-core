@@ -90,63 +90,63 @@ def load_custom_data(session_folder_path):
 
 
 # <<< PLEASE UPDATE THIS PATH >>> ## TO COPY LRLR_1_time_1 ALERTNESS_3minmark_1
-SESSION_FOLDER_PATH = "recorded_data/LRLR_1_time_1"
+# SESSION_FOLDER_PATH = "recorded_data/LRLR_1_time_1"
 
-print(f"Attempting to load data from: {SESSION_FOLDER_PATH}")
-loaded_data, session_metadata = load_custom_data(SESSION_FOLDER_PATH)
+# print(f"Attempting to load data from: {SESSION_FOLDER_PATH}")
+# loaded_data, session_metadata = load_custom_data(SESSION_FOLDER_PATH)
 
 
-# --- Display loaded data and metadata ---
-if session_metadata is not None: 
-    print("\nSession Information (from metadata):")
-    for key, value in session_metadata.items():
-        print(f"  {key}: {value}")
+# # --- Display loaded data and metadata ---
+# if session_metadata is not None: 
+#     print("\nSession Information (from metadata):")
+#     for key, value in session_metadata.items():
+#         print(f"  {key}: {value}")
 
-    if loaded_data is not None:
-        print("\nSuccessfully loaded data.")
-        print(f"Data shape (samples, channels): {loaded_data.shape}")
+#     if loaded_data is not None:
+#         print("\nSuccessfully loaded data.")
+#         print(f"Data shape (samples, channels): {loaded_data.shape}")
         
-        if loaded_data.shape[0] > 0: 
-            print("\nFirst 5 rows of loaded data (transposed to samples, channels):")
-            column_names = session_metadata.get('column_names', [f'Ch{i+1}' for i in range(loaded_data.shape[1])])
-            header = " | ".join(column_names)
-            print(header)
-            print("-" * len(header))
-            for row in loaded_data[:5, :]:
-                print(" | ".join(map(lambda x: f"{x:.3f}" if not np.isnan(x) else "NaN", row)))
-        else:
-            print("\nData loaded, but no samples to display (data shape is 0 rows).")
+#         if loaded_data.shape[0] > 0: 
+#             print("\nFirst 5 rows of loaded data (transposed to samples, channels):")
+#             column_names = session_metadata.get('column_names', [f'Ch{i+1}' for i in range(loaded_data.shape[1])])
+#             header = " | ".join(column_names)
+#             print(header)
+#             print("-" * len(header))
+#             for row in loaded_data[:5, :]:
+#                 print(" | ".join(map(lambda x: f"{x:.3f}" if not np.isnan(x) else "NaN", row)))
+#         else:
+#             print("\nData loaded, but no samples to display (data shape is 0 rows).")
 
-        # --- Optional: Example of plotting the first EEG channel ---
-        # if 'column_names' in session_metadata and loaded_data.shape[0] > 0 and loaded_data.shape[1] > 0:
-        #     first_eeg_channel_name = 'EEG_Filt_1' 
-        #     if first_eeg_channel_name in session_metadata['column_names']:
-        #         try:
-        #             eeg_channel_index = session_metadata['column_names'].index(first_eeg_channel_name)
-        #             plt.figure(figsize=(15, 5))
-        #             plt.plot(loaded_data[:, eeg_channel_index]) 
-        #             plt.title(f"Plot of: {session_metadata['column_names'][eeg_channel_index]}")
-        #             plt.xlabel("Sample Index")
-        #             plt.ylabel("Value")
-        #             plt.grid(True)
-        #             plt.show()
-        #         except IndexError:
-        #              print(f"\nSkipping plot: Channel index for '{first_eeg_channel_name}' out of bounds for loaded data shape {loaded_data.shape}.")
-        #     else:
-        #         print(f"\nSkipping plot: Channel '{first_eeg_channel_name}' not found in column names: {session_metadata['column_names']}.")
-        # else:
-        #     print("\nSkipping plot: Conditions not met (column names missing, no samples, or no channels).")
+#         # --- Optional: Example of plotting the first EEG channel ---
+#         # if 'column_names' in session_metadata and loaded_data.shape[0] > 0 and loaded_data.shape[1] > 0:
+#         #     first_eeg_channel_name = 'EEG_Filt_1' 
+#         #     if first_eeg_channel_name in session_metadata['column_names']:
+#         #         try:
+#         #             eeg_channel_index = session_metadata['column_names'].index(first_eeg_channel_name)
+#         #             plt.figure(figsize=(15, 5))
+#         #             plt.plot(loaded_data[:, eeg_channel_index]) 
+#         #             plt.title(f"Plot of: {session_metadata['column_names'][eeg_channel_index]}")
+#         #             plt.xlabel("Sample Index")
+#         #             plt.ylabel("Value")
+#         #             plt.grid(True)
+#         #             plt.show()
+#         #         except IndexError:
+#         #              print(f"\nSkipping plot: Channel index for '{first_eeg_channel_name}' out of bounds for loaded data shape {loaded_data.shape}.")
+#         #     else:
+#         #         print(f"\nSkipping plot: Channel '{first_eeg_channel_name}' not found in column names: {session_metadata['column_names']}.")
+#         # else:
+#         #     print("\nSkipping plot: Conditions not met (column names missing, no samples, or no channels).")
 
-    else: 
-        print(f"\nFailed to load data array from {SESSION_FOLDER_PATH}, but metadata was available.")
-        print("Please check data file integrity and error messages above.")
-else: 
-    print(f"\nFailed to load any data or metadata from {SESSION_FOLDER_PATH}.")
-    print("Please check the following:")
-    print("1. The 'test_custom_save.py' script has been run successfully to generate data.")
-    print("2. The 'SESSION_FOLDER_PATH' variable in this cell is correctly set to the generated session folder.")
-    print("   (e.g., 'recorded_data/YYYYMMDD_HHMMSS_micros')")
-    print("3. The session folder contains 'custom_combined_data.dat' and 'custom_metadata.npz'.")
+#     else: 
+#         print(f"\nFailed to load data array from {SESSION_FOLDER_PATH}, but metadata was available.")
+#         print("Please check data file integrity and error messages above.")
+# else: 
+#     print(f"\nFailed to load any data or metadata from {SESSION_FOLDER_PATH}.")
+#     print("Please check the following:")
+#     print("1. The 'test_custom_save.py' script has been run successfully to generate data.")
+#     print("2. The 'SESSION_FOLDER_PATH' variable in this cell is correctly set to the generated session folder.")
+#     print("   (e.g., 'recorded_data/YYYYMMDD_HHMMSS_micros')")
+#     print("3. The session folder contains 'custom_combined_data.dat' and 'custom_metadata.npz'.")
 
 
 # --- Plotting the last 4 channels (EOG) ---
@@ -304,7 +304,7 @@ def detect_lrlr_in_window(eog_data, srate, seconds, threshold=2, test=False):
         if test:
             print(f"Channel {channel}: Found LRLR pattern: {found_pattern}")
             print(f"  Events: {events}")
-            plot_single_channel_data(filtered_signal, srate=125, LRLR=found_pattern)
+            # plot_single_channel_data(filtered_signal, srate=125, LRLR=found_pattern)
 
     
     # Return True if count exceeds threshold
@@ -329,6 +329,6 @@ def main():
 
     print(f"LRLR detected: {test}, Count: {count}")
 
-main()
-
+if __name__ == "__main__":
+    main()
 

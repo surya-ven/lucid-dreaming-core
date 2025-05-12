@@ -32,8 +32,8 @@ def compute_alertness_score(data, sfreq=125, win_sec=10, step_sec=1, n_fft=256):
         alpha = psds[:, (freqs >= 8) & (freqs <= 12)].mean(axis=1)
         beta  = psds[:, (freqs >= 13) & (freqs <= 30)].mean(axis=1)
 
-        alpha_theta_ratio = alpha / (theta + 1e-6)
-        beta_theta_ratio  = beta / (theta + 1e-6)
+        alpha_theta_ratio = alpha / (theta)
+        beta_theta_ratio  = beta / (theta)
 
         features_over_time.append({
             "start_time": start / sfreq,
