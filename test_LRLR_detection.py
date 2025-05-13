@@ -6,7 +6,31 @@ import os
 from scipy.signal import butter, filtfilt, medfilt, find_peaks, welch
 import time
 
+rec_data_names = [
+    "v2_LRLR_once_1_mix",
+    "v2_LRLR_once_2_mix",
+    "v2_LRLR_once_3_mix",
+    "v2_LRLR_once_4_mix",
+    "v2_LRLR_once_5_mix",
+    "v2_LRLR_once_6_closed",
+    "v2_LRLR_once_7_closed",
+    "v2_LRLR_once_8_closed",
+    "v2_LRLR_once_9_closed",
+    "v2_LRLR_once_10_closed",
+    "v2_LRLR_once_11_mix_rapid",
+    "v2_LRLR_once_12_closed_rapid",
+    "v2_LRLR_once_13_mix_rapid",
+    "v2_LRLR_once_14_mix_rapid",
+    "v2_LRLR_once_15_mix_rapid",
+    "v2_LR_once_16_mix",
+    "v2_LR_once_17_mix",
+    "v2_L_once_17_mix",
+    "v2_R_once_18_mix",
+    "v2_REM_once_19_closed",
+    "v2_REM_once_20_closed"
+]
 
+ylim = 250
 
 def load_custom_data(session_folder_path):
     """
@@ -16,10 +40,10 @@ def load_custom_data(session_folder_path):
         session_folder_path (str): Path to the session folder.
 
     Returns:
-        tuple: (data_array, metadata)
-               - data_array (np.ndarray): The loaded data, transposed to (samples, channels).
-               - metadata (dict): The loaded session_info from metadata.
-               Returns (None, None) if loading fails.
+        tuple: (data_array, metadata_dict)
+               - data_array (np.ndarray): The loaded data. Timestamps and TargetEvent columns might be prepended.
+               - metadata_dict (dict): The loaded metadata, including session_info and potentially processed_column_names.
+               Returns (None, None) if loading fails at an early stage.
     """
     data_filename = "custom_combined_data.dat"
     metadata_filename = "custom_metadata.npz"
@@ -32,6 +56,7 @@ def load_custom_data(session_folder_path):
         return None, None
     
     session_info_loaded = None
+    metadata_loaded = None
     try:
         metadata_loaded = np.load(metadata_filepath, allow_pickle=True)
         session_info_loaded = metadata_loaded['session_info'].item()
@@ -41,144 +66,224 @@ def load_custom_data(session_folder_path):
 
     if not os.path.exists(data_filepath):
         print(f"Error: Data file not found: {data_filepath}")
-        # Return metadata if it was loaded, so user can inspect session_info
         return None, session_info_loaded 
 
     try:
-        num_channels = session_info_loaded['expected_columns'] # Should be 8
+        num_channels = session_info_loaded['expected_columns'] 
         data_type = np.dtype(session_info_loaded['custom_data_type'])
         data_shape_on_save = session_info_loaded.get('data_shape_on_save', 'samples_first') 
+        original_column_names = list(session_info_loaded.get('column_names', [f'Ch{j+1}' for j in range(num_channels)]))
 
         loaded_flat_data = np.fromfile(data_filepath, dtype=data_type)
 
         if loaded_flat_data.size == 0:
             print("Warning: Data file is empty.")
-            return np.array([]).reshape(0, num_channels), session_info_loaded 
+            # Return empty array matching expected original channels, plus session_info
+            empty_data = np.array([]).reshape(0, num_channels) 
+            session_info_loaded['processed_column_names'] = original_column_names
+            return empty_data, session_info_loaded
+
+        processed_data = None
+        final_column_names = []
 
         if data_shape_on_save == 'channels_first':
             if loaded_flat_data.size % num_channels == 0:
                 num_samples_loaded_total = loaded_flat_data.size // num_channels
-                # Reshape as (channels, total_samples_in_file)
                 reshaped_data_channels_first = loaded_flat_data.reshape(num_channels, num_samples_loaded_total)
-                # Transpose to (total_samples_in_file, channels)
-                final_data_samples_first = reshaped_data_channels_first.T 
-                return final_data_samples_first, session_info_loaded
+                current_data_array = reshaped_data_channels_first.T  
+                final_column_names = list(original_column_names) # Start with original channel names
+
+                # Attempt to prepend timestamps and event data
+                block_ts = metadata_loaded.get('data_block_timestamps', None)
+                block_counts = metadata_loaded.get('data_block_sample_counts', None)
+                target_event_transitions = metadata_loaded.get('target_event_transitions', None)
+
+                if block_ts is not None and block_counts is not None and len(block_ts) > 0:
+                    if sum(block_counts) == current_data_array.shape[0]: # Validate counts match data length
+                        sample_timestamps = np.concatenate([np.full(int(cnt), float(ts)) for ts, cnt in zip(block_ts, block_counts)])
+                        current_data_array = np.column_stack((sample_timestamps, current_data_array))
+                        final_column_names.insert(0, "Timestamp")
+
+                        # If timestamps were added, try to add event data
+                        if target_event_transitions is not None and len(target_event_transitions) > 0:
+                            target_event_values = np.full(len(sample_timestamps), False, dtype=bool)
+                            current_event_state = False 
+                            transition_idx = 0
+                            for i in range(len(sample_timestamps)):
+                                sample_ts_val = sample_timestamps[i]
+                                while transition_idx < len(target_event_transitions) and \
+                                      target_event_transitions[transition_idx][0] <= sample_ts_val:
+                                    current_event_state = target_event_transitions[transition_idx][1]
+                                    transition_idx += 1
+                                target_event_values[i] = current_event_state
+                            
+                            # Insert event data after timestamp column
+                            current_data_array = np.column_stack((current_data_array[:,0], target_event_values, current_data_array[:,1:]))
+                            final_column_names.insert(1, "TargetEvent")
+                        else:
+                            print("Note: No target event transitions found in metadata or transitions array is empty.")
+                    else:
+                        print("Warning: Sum of block_counts does not match data length. Timestamps/Events not prepended.")
+                else:
+                    print("Note: data_block_timestamps or data_block_sample_counts not found or empty in metadata. Timestamps/Events not prepended.")
+                
+                processed_data = current_data_array
             else:
-                print(f"Error: Cannot reshape data saved as 'channels_first'. Total elements ({loaded_flat_data.size}) "
-                      f"not divisible by num_channels ({num_channels}).")
+                print(f"Error: Cannot reshape data saved as 'channels_first'. Total elements ({loaded_flat_data.size}) not divisible by num_channels ({num_channels}).")
                 return None, session_info_loaded
-        else: # Assuming 'samples_first' or old format where num_channels was num_cols
+        
+        else: # Assuming 'samples_first' or old format
             if loaded_flat_data.size % num_channels == 0: 
                 num_samples_loaded = loaded_flat_data.size // num_channels
-                reshaped_data = loaded_flat_data.reshape(num_samples_loaded, num_channels)
-                return reshaped_data, session_info_loaded
+                processed_data = loaded_flat_data.reshape(num_samples_loaded, num_channels)
+                final_column_names = list(original_column_names)
             else:
-                print(f"Error: Cannot reshape data saved as 'samples_first'. Total elements ({loaded_flat_data.size}) "
-                      f"not divisible by num_columns ({num_channels}).")
+                print(f"Error: Cannot reshape data saved as 'samples_first'. Total elements ({loaded_flat_data.size}) not divisible by num_columns ({num_channels}).")
                 return None, session_info_loaded
+
+        session_info_loaded['processed_column_names'] = final_column_names
+        return processed_data, session_info_loaded
 
     except Exception as e:
         print(f"Error processing data from {data_filepath} or applying metadata: {e}")
         import traceback
         traceback.print_exc()
-        # Return metadata if it was loaded, so user can inspect session_info
         return None, session_info_loaded
-
-# --- Configuration for loading ---
-# !!! IMPORTANT !!!
-# Replace 'YOUR_SESSION_FOLDER_HERE' with the actual name of the 
-# subfolder in 'recorded_data/' that was created by the modified 'test_custom_save.py'.
-# For example: SESSION_FOLDER_PATH = "recorded_data/20250507_103045_123456"
-
-
-# <<< PLEASE UPDATE THIS PATH >>> ## TO COPY LRLR_1_time_1 ALERTNESS_3minmark_1
-# SESSION_FOLDER_PATH = "recorded_data/LRLR_1_time_1"
-
-# print(f"Attempting to load data from: {SESSION_FOLDER_PATH}")
-# loaded_data, session_metadata = load_custom_data(SESSION_FOLDER_PATH)
 
 
 # # --- Display loaded data and metadata ---
-# if session_metadata is not None: 
-#     print("\nSession Information (from metadata):")
-#     for key, value in session_metadata.items():
-#         print(f"  {key}: {value}")
+def display_loaded_data_and_metadata(loaded_data, session_metadata):
+    if session_metadata is not None: 
+        print("\nSession Information (from metadata):")
+        for key, value in session_metadata.items():
+            if key != 'processed_column_names': # Don't print this internal-use key here
+                print(f"  {key}: {value}")
 
-#     if loaded_data is not None:
-#         print("\nSuccessfully loaded data.")
-#         print(f"Data shape (samples, channels): {loaded_data.shape}")
+        if loaded_data is not None:
+            print("\nSuccessfully loaded data.")
+            display_column_names = session_metadata.get('processed_column_names', 
+                                                    [f'Col{i+1}' for i in range(loaded_data.shape[1])])
+            print(f"Data shape (samples, columns): {loaded_data.shape}")
+            print(f"Columns: {display_column_names}")
+            
+            if loaded_data.shape[0] > 0: 
+                print("\nFirst 5 rows of loaded data:")
+                header = " | ".join(display_column_names)
+                print(header)
+                print("-" * len(header))
+                for row in loaded_data[:5, :]:
+                    # Format each element in the row for display
+                    formatted_row = []
+                    for i, item in enumerate(row):
+                        col_name = display_column_names[i] if i < len(display_column_names) else ""
+                        if col_name == "Timestamp":
+                            formatted_row.append(f"{item:.2f}") # Timestamp with 2 decimal places
+                        elif isinstance(item, bool) or col_name == "TargetEvent":
+                            formatted_row.append(str(item))    # Boolean as True/False
+                        elif isinstance(item, float) or isinstance(item, np.floating):
+                            formatted_row.append(f"{item:.3f}" if not np.isnan(item) else "NaN") # Floats with 3 decimal places
+                        else:
+                            formatted_row.append(str(item))
+                    print(" | ".join(formatted_row))
+            else:
+                print("\nData loaded, but no samples to display (data shape is 0 rows).")
+        else: 
+            print(f"\nFailed to load data array from SESSION_FOLDER_PATH, but metadata was available.")
+            print("Please check data file integrity and error messages above.")
+    else: 
+        print(f"\nFailed to load any data or metadata from SESSION_FOLDER_PATH.")
+
+
+# --- Plotting all 4 EOG channels at once with events ---
+def plot_eog_events(loaded_data, session_metadata, title = "All Channels"):
+    display_column_names = session_metadata.get('processed_column_names', 
+                                                [f'Col{i+1}' for i in range(loaded_data.shape[1])])
+    if loaded_data is not None:
+        plt.figure(figsize=(12, 6))
+        for i in range(6, loaded_data.shape[1]):
+            col_name = display_column_names[i] if i < len(display_column_names) else f"Col{i+1}"
+            plt.plot(loaded_data[:, i], label=col_name, alpha=0.15)
+
+        # plot the target event with a different color for if the value is 0 or 1
+        target_event = loaded_data[:, 1]
+        # plt.plot(target_event, label="Target Event", color='red', alpha=0.5)
+        plt.fill_between(range(len(target_event)), target_event, color='red', where=(target_event == 1), label="Target Event (filled)")
+        plt.fill_between(range(len(target_event)), target_event, color='blue', where=(target_event == 0), label="Non-Target Event (filled)")
+        # plt.axhline(0, color='black', linewidth=0.5, linestyle='--')
+
+        plt.xlabel("Sample Index")
+        plt.ylabel("Value")
+        plt.title(title)
+        plt.legend()
         
-#         if loaded_data.shape[0] > 0: 
-#             print("\nFirst 5 rows of loaded data (transposed to samples, channels):")
-#             column_names = session_metadata.get('column_names', [f'Ch{i+1}' for i in range(loaded_data.shape[1])])
-#             header = " | ".join(column_names)
-#             print(header)
-#             print("-" * len(header))
-#             for row in loaded_data[:5, :]:
-#                 print(" | ".join(map(lambda x: f"{x:.3f}" if not np.isnan(x) else "NaN", row)))
-#         else:
-#             print("\nData loaded, but no samples to display (data shape is 0 rows).")
-
-#         # --- Optional: Example of plotting the first EEG channel ---
-#         # if 'column_names' in session_metadata and loaded_data.shape[0] > 0 and loaded_data.shape[1] > 0:
-#         #     first_eeg_channel_name = 'EEG_Filt_1' 
-#         #     if first_eeg_channel_name in session_metadata['column_names']:
-#         #         try:
-#         #             eeg_channel_index = session_metadata['column_names'].index(first_eeg_channel_name)
-#         #             plt.figure(figsize=(15, 5))
-#         #             plt.plot(loaded_data[:, eeg_channel_index]) 
-#         #             plt.title(f"Plot of: {session_metadata['column_names'][eeg_channel_index]}")
-#         #             plt.xlabel("Sample Index")
-#         #             plt.ylabel("Value")
-#         #             plt.grid(True)
-#         #             plt.show()
-#         #         except IndexError:
-#         #              print(f"\nSkipping plot: Channel index for '{first_eeg_channel_name}' out of bounds for loaded data shape {loaded_data.shape}.")
-#         #     else:
-#         #         print(f"\nSkipping plot: Channel '{first_eeg_channel_name}' not found in column names: {session_metadata['column_names']}.")
-#         # else:
-#         #     print("\nSkipping plot: Conditions not met (column names missing, no samples, or no channels).")
-
-#     else: 
-#         print(f"\nFailed to load data array from {SESSION_FOLDER_PATH}, but metadata was available.")
-#         print("Please check data file integrity and error messages above.")
-# else: 
-#     print(f"\nFailed to load any data or metadata from {SESSION_FOLDER_PATH}.")
-#     print("Please check the following:")
-#     print("1. The 'test_custom_save.py' script has been run successfully to generate data.")
-#     print("2. The 'SESSION_FOLDER_PATH' variable in this cell is correctly set to the generated session folder.")
-#     print("   (e.g., 'recorded_data/YYYYMMDD_HHMMSS_micros')")
-#     print("3. The session folder contains 'custom_combined_data.dat' and 'custom_metadata.npz'.")
+        plt.show()
 
 
-# --- Plotting the last 4 channels (EOG) ---
-def plot_eeg_eog_data(loaded_data, session_metadata, colstart=0, colend=3):
+# --- Plotting the last 4 channels (EOG OR EEG) ---
+def plot_eeg_eog_data(loaded_data, session_metadata, colstart=0, colend=4, target_event=None, title="All Channels"):
     if loaded_data is not None and loaded_data.shape[0] > 0 and loaded_data.shape[1] >= colend:
         num_samples = loaded_data.shape[0]
-        time_vector = np.arange(num_samples) / 125.0  # Timestep of 1/100th of a second
+        time_vector = np.arange(num_samples)  # Timestep of 1/100th of a second
 
         # Select the last 4 columns
         data_to_plot = loaded_data[:, colstart:colend]
 
         # Get column names for the last 4 columns, if available
         column_names = session_metadata.get('column_names', [f'Ch{i+1}' for i in range(loaded_data.shape[1])])
-        plot_column_names = column_names[colstart:colend]
+        plot_column_names = column_names[-4:]
 
-        fig, axes = plt.subplots(4, 1, figsize=(15, 10), sharex=True)
+        fig, axes = plt.subplots(3, 1, figsize=(15, 10), sharex=True)
         if data_to_plot.shape[1] == 1: # Handle case if there's only 1 column to plot (though we expect 4)
             axes = [axes] 
 
-        for i in range(data_to_plot.shape[1]):
+        for i in range(0,2):
             ax = axes[i]
             ax.plot(time_vector, data_to_plot[:, i])
+            if target_event is not None:
+                ax.fill_between(range(len(target_event)), target_event, color='darkred', edgecolor='darkred', 
+                                linewidth=4,alpha=1, where=(target_event == 1), label="Target Event (filled)")
+
+
             ax.set_title(f"Plot of: {plot_column_names[i]}")
             ax.set_ylabel("Value")
-            ax.set_ylim(-400, 400)  # Set y-axis limits
+            ax.set_ylim([-ylim, ylim])
             ax.grid(True)
 
-        axes[-1].set_xlabel("Time (seconds)")
+        # Plot 3: LF - RF ## NOTE I DON'T THINK THIS WORKS/HELPS
+        # ------------------------------------------------------
+        ax = axes[2]
+        LH_RH_vector = data_to_plot[:, 0]-data_to_plot[:, 1]
+        ax.plot(time_vector, LH_RH_vector, label="LH-RH")
+        if target_event is not None:
+            ax.fill_between(range(len(target_event)), target_event, color='darkred', edgecolor='darkred', 
+                            linewidth=2,alpha=1, where=(target_event == 1), label="Target Event (filled)")
+
+        ax.set_title(f"Plot of: LH-RH ({title})")
+        ax.set_ylabel("Value")
+        ax.set_ylim([-ylim, ylim])
+        ax.grid(True)
+
+        # # Plot 4: OTEL + LF - OTER - RF
+        # ax = axes[3]
+        # diff_vector = data_to_plot[:, 0] + data_to_plot[:, 2] - data_to_plot[:, 1] - data_to_plot[:, 3]
+        # ax.plot(time_vector, diff_vector, label="L side - R side")
+        # if target_event is not None:
+        #     ax.fill_between(range(len(target_event)), target_event, color='darkred', edgecolor='darkred', 
+        #                     linewidth=2,alpha=1, where=(target_event == 1), label="Target Event (filled)")
+
+        # ax.set_title(f"Plot of: LH-RH")
+        # ax.set_ylabel("Value")
+        # ax.grid(True)
+        ## ------------------------------------------------------
+
+        axes[-1].set_xlabel("Time (118*seconds)")
         plt.tight_layout()
-        plt.show()
+
+        # # Save the plot to a PDF file
+        # pdf_filename = f"{title}_event_plot.pdf"
+        # plt.savefig(pdf_filename, format='pdf', bbox_inches='tight')
+        # print(f"Plot saved to {pdf_filename}")
+        # plt.show()
     elif loaded_data is None:
         print("\nSkipping plot: `loaded_data` is None.")
     elif loaded_data.shape[0] == 0:
@@ -205,6 +310,21 @@ def plot_single_channel_data(data, srate, LRLR=None):
         plt.show()
     else:
         print("\nSkipping plot: `data` is None or has no samples.")
+
+
+def plot_power_spectrum(data, srate, name="???"):
+    plt.figure(figsize=(10, 6))
+    for i in range(data.shape[1]):
+        f, Pxx = welch(data[:, i], fs=srate)
+        plt.semilogy(f, Pxx, label=f'Channel {i}')
+    
+    plt.axvline(60, color='r', linestyle='--', alpha=0.7, label='60 Hz')
+    plt.xlabel('Frequency (Hz)')
+    plt.ylabel('Power spectral density')
+    plt.title(f'Power Spectrum of {name} Channels')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
 
 
 # OLD Basic peak detection function for LRLR-like detection. OLD
@@ -454,7 +574,7 @@ def detect_REM_in_window(eog_data, srate, seconds,
 
 
 # Pcts Missing
-def detect_signal_integrity(eog_data, nchannels, print=False):
+def detect_signal_integrity(eog_data, nchannels, print_missing_pcts=False):
 
     # Check for large jumps in signal
     pcts = []
@@ -464,7 +584,8 @@ def detect_signal_integrity(eog_data, nchannels, print=False):
         # Check for missing values (NaN or Inf)
         missing_values = np.isnan(signal) | np.isinf(signal)
         missing_percentage = np.mean(missing_values) * 100
-        print(f"Channel {channel}: {missing_percentage:.2f}% missing values") if print else None
+        if print_missing_pcts:
+            print(f"Channel {channel}: {missing_percentage}% missing values")
         pcts.append(missing_percentage)
 
         # Check for large jumps that might indicate signal discontinuity
@@ -472,7 +593,7 @@ def detect_signal_integrity(eog_data, nchannels, print=False):
             jumps = np.abs(np.diff(signal))
             large_jumps = jumps > 1000  # Threshold for large jumps
             large_jump_percentage = np.mean(large_jumps) * 100
-            print(f"Channel {channel}: {large_jump_percentage:.2f}% large jumps") if print else None
+            print(f"Channel {channel}: {large_jump_percentage}% large jumps") if print_missing_pcts else None
     
     
     return sum(pcts)/len(pcts), pcts
@@ -480,22 +601,157 @@ def detect_signal_integrity(eog_data, nchannels, print=False):
 
 
 
+
+def filter_signal_data(data, srate, mft=5, lowcut=0.5, highcut=15, artifact_threshold=75):
+
+    # # 0. Remove 60 Hz noise using a notch filter. 
+    # # NOT NEEDED FOR FILTERED FRENZ DATA
+    # f, Pxx = welch(eog_data[:, 0], fs=srate) 
+
+    #  # 1. Artifact removal by zeroing values outside threshold ## NOTE NOT USED; LOOKS BAD
+    # for channel in range(data.shape[1]):
+    #     # Find artifact indices where signal exceeds threshold
+    #     artifacts = np.abs(data[:, channel]) > artifact_threshold
+        
+    #     # Replace artifact values with 0
+    #     if np.any(artifacts):
+    #         data[artifacts, channel] = 0
+    #         print(f"Channel {channel}: Zeroed {np.sum(artifacts)} samples ({np.mean(artifacts)*100:.2f}% of data)")
+
+
+    # 1. Artifact removal/rejection with thresholding
+    for channel in range(data.shape[1]):
+        # Find artifact indices where signal exceeds threshold
+        artifacts = np.abs(data[:, channel]) > artifact_threshold
+        
+        if np.any(artifacts):
+            # Get indices of artifacts
+            artifact_indices = np.where(artifacts)[0]
+            
+            # Process each continuous segment of artifacts
+            segments = np.split(artifact_indices, np.where(np.diff(artifact_indices) > 1)[0] + 1)
+            
+            for segment in segments:
+                if len(segment) > 0:
+                    # Get start and end indices of segment
+                    start_idx = segment[0]
+                    end_idx = segment[-1]
+                    
+                    # Get values before and after the artifact segment for interpolation
+                    # Handle edge cases where artifact is at beginning or end
+                    if start_idx == 0:
+                        # Artifact at beginning, use first non-artifact value
+                        non_artifact_idx = np.where(~artifacts)[0]
+                        if len(non_artifact_idx) > 0:
+                            pre_value = data[non_artifact_idx[0], channel]
+                        else:
+                            pre_value = 0  # All values are artifacts; use 0
+                    else:
+                        pre_value = data[start_idx-1, channel]
+                        
+                    if end_idx == len(data) - 1:
+                        # Artifact at end, use last non-artifact value
+                        non_artifact_idx = np.where(~artifacts)[0]
+                        if len(non_artifact_idx) > 0:
+                            post_value = data[non_artifact_idx[-1], channel]
+                        else:
+                            post_value = 0  # All values are artifacts; use 0
+                    else:
+                        post_value = data[end_idx+1, channel]
+                    
+                    # Linear interpolation across the artifact segment
+                    segment_length = len(segment)
+                    for i, idx in enumerate(segment):
+                        weight = i / segment_length
+                        data[idx, channel] = pre_value * (1 - weight) + post_value * weight
+
+
+    # 2. Median filter to kill isolated spikes
+    data = medfilt(data, kernel_size=(mft,1))
+
+    # 3. Zero‑phase band‑pass (0.5–15 Hz)
+    b, a = butter(4, [lowcut, highcut], btype='band', fs=srate)
+    data = filtfilt(b, a, data, axis=0)
+
+
+    
+    return data
+
+# def feature_extraction(channel_data, srate):
+    
+
+def main2():
+
+    l = []
+
+    # Loop through recorded data files
+    for filepath in rec_data_names[0:16]:
+        SESSION_FOLDER_PATH = f"recorded_data/{filepath}"
+        print(f"Attempting to load data from: {SESSION_FOLDER_PATH}")
+        loaded_data, session_metadata = load_custom_data(SESSION_FOLDER_PATH)
+
+        if loaded_data is None or session_metadata is None:
+            print("Failed to load data or metadata. Exiting.")
+            return
+        
+        display_column_names = session_metadata.get('processed_column_names', 
+                                                    [f'Col{i+1}' for i in range(loaded_data.shape[1])])
+        print(f"Data shape (samples, columns): {loaded_data.shape}")
+        print(f"Columns: {display_column_names}")
+
+
+        ## Filtering and processing
+        eog_data = loaded_data[:2000,-4:]
+
+        eog_data = filter_signal_data(eog_data, srate=118, mft=5, lowcut=0.5, highcut=15, artifact_threshold=75)
+        # srate = 118
+        # b, a  = butter(4, [0.5, 15], btype='band', fs=srate)
+        # eog_data    = filtfilt(b, a, eog_data, axis=0)
+
+        # eog_data = medfilt(eog_data, kernel_size=(71,1))
+
+
+
+
+        
+        print(f"  --using cols: {display_column_names[-4:]}")
+        l.append(detect_signal_integrity(eog_data, 4, True)[0])
+        plot_eeg_eog_data(eog_data, session_metadata, colstart=0, colend=4, target_event=loaded_data[:2000, 1])
+
+    print(f"Average Average % missing values across all channels: {np.mean(l):.2f}%")
+    print(f"Average % missing values across all channels: {l}")
+    
+
+
 # # --- Example of filtering and processing and LRLR checking the loaded data ---
 def main():
+
+    # <<< PLEASE UPDATE THIS PATH >>> ## TO COPY LRLR_1_time_1 ALERTNESS_3minmark_1
+    SESSION_FOLDER_PATH = "recorded_data/v2_LRLR_once_8_closed"
+
+    print(f"Attempting to load data from: {SESSION_FOLDER_PATH}")
+    loaded_data, session_metadata = load_custom_data(SESSION_FOLDER_PATH)
+
+    if loaded_data is None or session_metadata is None:
+        print("Failed to load data or metadata. Exiting.")
+        return
+    display_loaded_data_and_metadata(loaded_data, session_metadata)
+
+
+
     srate = 125  # Sampling frequency in Hz
-    eog_data = loaded_data[:,4:8]
-    print("Length of Data in seconds: ",len(loaded_data)/srate)
+    eog_data = loaded_data[:,-4:]
 
 
     # # 1. Remove 60 Hz noise using a notch filter/Look to see if this is needed
     # f, Pxx = welch(eog_data[:, 0], fs=srate) 
 
     # 2. Zero‑phase band‑pass (0.5–15 Hz)
-    # b, a  = butter(4, [0.5, 15], btype='band', fs=srate)
-    # eog_data    = filtfilt(b, a, eog_data, axis=0)
+    b, a  = butter(4, [0.5, 15], btype='band', fs=srate)
+    eog_data    = filtfilt(b, a, eog_data, axis=0)
 
     # 3. Median filter to kill isolated spikes
-    # eog_data = medfilt(eog_data, kernel_size=(3,1))
+    eog_data = medfilt(eog_data, kernel_size=(3,1))
 
 
     ## -- TESTING ALGS -- ##
@@ -523,11 +779,37 @@ def main():
 
 
     # # Plot the channels
-    # plot_eeg_eog_data(eog_data, session_metadata, colstart=0, colend=4)
+    plot_eeg_eog_data(eog_data, session_metadata, colstart=0, colend=4)
 
 
     print(f"LRLR detected: {test}, Count: {count}")
 
+def test1():
+    # <<< PLEASE UPDATE THIS PATH >>> ## TO COPY LRLR_1_time_1 ALERTNESS_3minmark_1
+    for filepath in rec_data_names[0:8]:
+        SESSION_FOLDER_PATH = f"recorded_data/{filepath}"
+
+
+        loaded_data, session_metadata = load_custom_data(SESSION_FOLDER_PATH)
+
+        if loaded_data is None or session_metadata is None:
+            print("Failed to load data or metadata. Exiting.")
+            return
+
+        ## Filtering and processing
+        eog_data = loaded_data[:,-4:]
+
+        plot_eeg_eog_data(eog_data, session_metadata, title="pre filter", target_event=loaded_data[:, 1])
+        pdf_filename = f"{filepath}_preprocessing_plot.pdf"
+        plt.savefig(pdf_filename, format='pdf', bbox_inches='tight')
+        
+        eog_filt_data = filter_signal_data(eog_data, srate=118, mft=5, lowcut=0.5, highcut=15, artifact_threshold=75)
+
+        plot_eeg_eog_data(eog_filt_data, session_metadata, title="post filter", target_event=loaded_data[:, 1])
+        pdf_filename = f"{filepath}_postprocessing_plot.pdf"
+        plt.savefig(pdf_filename, format='pdf', bbox_inches='tight')
+
+
 if __name__ == "__main__":
-    main()
+    test1()
 
