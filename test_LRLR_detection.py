@@ -30,7 +30,7 @@ rec_data_names = [
     "v2_REM_once_20_closed"
 ]
 
-ylim = 250
+ylim = 500
 
 def load_custom_data(session_folder_path):
     """
@@ -246,7 +246,7 @@ def plot_eeg_eog_data(loaded_data, session_metadata, colstart=0, colend=4, targe
 
             ax.set_title(f"Plot of: {plot_column_names[i]}")
             ax.set_ylabel("Value")
-            ax.set_ylim([-ylim, ylim])
+            # ax.set_ylim([-ylim, ylim])
             ax.grid(True)
 
         # Plot 3: LF - RF ## NOTE I DON'T THINK THIS WORKS/HELPS
@@ -260,7 +260,7 @@ def plot_eeg_eog_data(loaded_data, session_metadata, colstart=0, colend=4, targe
 
         ax.set_title(f"Plot of: LH-RH ({title})")
         ax.set_ylabel("Value")
-        ax.set_ylim([-ylim, ylim])
+        # ax.set_ylim([-ylim, ylim])
         ax.grid(True)
 
         # # Plot 4: OTEL + LF - OTER - RF
@@ -284,6 +284,7 @@ def plot_eeg_eog_data(loaded_data, session_metadata, colstart=0, colend=4, targe
         # plt.savefig(pdf_filename, format='pdf', bbox_inches='tight')
         # print(f"Plot saved to {pdf_filename}")
         # plt.show()
+
     elif loaded_data is None:
         print("\nSkipping plot: `loaded_data` is None.")
     elif loaded_data.shape[0] == 0:
@@ -573,7 +574,7 @@ def detect_REM_in_window(eog_data, srate, seconds,
 
 
 
-# Pcts Missing
+# Find the pcts of signal missing
 def detect_signal_integrity(eog_data, nchannels, print_missing_pcts=False):
 
     # Check for large jumps in signal
@@ -600,8 +601,6 @@ def detect_signal_integrity(eog_data, nchannels, print_missing_pcts=False):
 
 
 
-
-
 def filter_signal_data(data, srate, mft=5, lowcut=0.5, highcut=15, artifact_threshold=75):
 
     # # 0. Remove 60 Hz noise using a notch filter. 
@@ -619,60 +618,60 @@ def filter_signal_data(data, srate, mft=5, lowcut=0.5, highcut=15, artifact_thre
     #         print(f"Channel {channel}: Zeroed {np.sum(artifacts)} samples ({np.mean(artifacts)*100:.2f}% of data)")
 
 
-    # 1. Artifact removal/rejection with thresholding
-    for channel in range(data.shape[1]):
-        # Find artifact indices where signal exceeds threshold
-        artifacts = np.abs(data[:, channel]) > artifact_threshold
+    # # 1. Artifact removal/rejection with thresholding
+    # for channel in range(data.shape[1]):
+    #     # Find artifact indices where signal exceeds threshold
+    #     artifacts = np.abs(data[:, channel]) > artifact_threshold
         
-        if np.any(artifacts):
-            # Get indices of artifacts
-            artifact_indices = np.where(artifacts)[0]
+    #     if np.any(artifacts):
+    #         # Get indices of artifacts
+    #         artifact_indices = np.where(artifacts)[0]
             
-            # Process each continuous segment of artifacts
-            segments = np.split(artifact_indices, np.where(np.diff(artifact_indices) > 1)[0] + 1)
+    #         # Process each continuous segment of artifacts
+    #         segments = np.split(artifact_indices, np.where(np.diff(artifact_indices) > 1)[0] + 1)
             
-            for segment in segments:
-                if len(segment) > 0:
-                    # Get start and end indices of segment
-                    start_idx = segment[0]
-                    end_idx = segment[-1]
+    #         for segment in segments:
+    #             if len(segment) > 0:
+    #                 # Get start and end indices of segment
+    #                 start_idx = segment[0]
+    #                 end_idx = segment[-1]
                     
-                    # Get values before and after the artifact segment for interpolation
-                    # Handle edge cases where artifact is at beginning or end
-                    if start_idx == 0:
-                        # Artifact at beginning, use first non-artifact value
-                        non_artifact_idx = np.where(~artifacts)[0]
-                        if len(non_artifact_idx) > 0:
-                            pre_value = data[non_artifact_idx[0], channel]
-                        else:
-                            pre_value = 0  # All values are artifacts; use 0
-                    else:
-                        pre_value = data[start_idx-1, channel]
+    #                 # Get values before and after the artifact segment for interpolation
+    #                 # Handle edge cases where artifact is at beginning or end
+    #                 if start_idx == 0:
+    #                     # Artifact at beginning, use first non-artifact value
+    #                     non_artifact_idx = np.where(~artifacts)[0]
+    #                     if len(non_artifact_idx) > 0:
+    #                         pre_value = data[non_artifact_idx[0], channel]
+    #                     else:
+    #                         pre_value = 0  # All values are artifacts; use 0
+    #                 else:
+    #                     pre_value = data[start_idx-1, channel]
                         
-                    if end_idx == len(data) - 1:
-                        # Artifact at end, use last non-artifact value
-                        non_artifact_idx = np.where(~artifacts)[0]
-                        if len(non_artifact_idx) > 0:
-                            post_value = data[non_artifact_idx[-1], channel]
-                        else:
-                            post_value = 0  # All values are artifacts; use 0
-                    else:
-                        post_value = data[end_idx+1, channel]
+    #                 if end_idx == len(data) - 1:
+    #                     # Artifact at end, use last non-artifact value
+    #                     non_artifact_idx = np.where(~artifacts)[0]
+    #                     if len(non_artifact_idx) > 0:
+    #                         post_value = data[non_artifact_idx[-1], channel]
+    #                     else:
+    #                         post_value = 0  # All values are artifacts; use 0
+    #                 else:
+    #                     post_value = data[end_idx+1, channel]
                     
-                    # Linear interpolation across the artifact segment
-                    segment_length = len(segment)
-                    for i, idx in enumerate(segment):
-                        weight = i / segment_length
-                        data[idx, channel] = pre_value * (1 - weight) + post_value * weight
+    #                 # Linear interpolation across the artifact segment
+    #                 segment_length = len(segment)
+    #                 for i, idx in enumerate(segment):
+    #                     weight = i / segment_length
+    #                     data[idx, channel] = pre_value * (1 - weight) + post_value * weight
 
 
     # 2. Median filter to kill isolated spikes
     data = medfilt(data, kernel_size=(mft,1))
 
+
     # 3. Zero‑phase band‑pass (0.5–15 Hz)
     b, a = butter(4, [lowcut, highcut], btype='band', fs=srate)
     data = filtfilt(b, a, data, axis=0)
-
 
     
     return data
@@ -747,7 +746,7 @@ def main():
     # f, Pxx = welch(eog_data[:, 0], fs=srate) 
 
     # 2. Zero‑phase band‑pass (0.5–15 Hz)
-    b, a  = butter(4, [0.5, 15], btype='band', fs=srate)
+    b, a  = butter(4, [0.5, 3], btype='band', fs=srate)
     eog_data    = filtfilt(b, a, eog_data, axis=0)
 
     # 3. Median filter to kill isolated spikes
@@ -786,7 +785,7 @@ def main():
 
 def test1():
     # <<< PLEASE UPDATE THIS PATH >>> ## TO COPY LRLR_1_time_1 ALERTNESS_3minmark_1
-    for filepath in rec_data_names[0:8]:
+    for filepath in rec_data_names[4:11]:
         SESSION_FOLDER_PATH = f"recorded_data/{filepath}"
 
 
@@ -797,18 +796,19 @@ def test1():
             return
 
         ## Filtering and processing
-        eog_data = loaded_data[:,-4:]
+        eog_data = loaded_data[:2000,-4:]
 
-        plot_eeg_eog_data(eog_data, session_metadata, title="pre filter", target_event=loaded_data[:, 1])
+        plot_eeg_eog_data(eog_data, session_metadata, title="pre filter", target_event=loaded_data[:2000, 1])
         pdf_filename = f"{filepath}_preprocessing_plot.pdf"
-        plt.savefig(pdf_filename, format='pdf', bbox_inches='tight')
+        # plt.savefig(pdf_filename, format='pdf', bbox_inches='tight')
+        plt.show()
         
-        eog_filt_data = filter_signal_data(eog_data, srate=118, mft=5, lowcut=0.5, highcut=15, artifact_threshold=75)
+        eog_filt_data = filter_signal_data(eog_data, srate=118, mft=7, lowcut=0.2, highcut=3, artifact_threshold=75)
 
-        plot_eeg_eog_data(eog_filt_data, session_metadata, title="post filter", target_event=loaded_data[:, 1])
+        plot_eeg_eog_data(eog_filt_data, session_metadata, title="post filter", target_event=loaded_data[:2000, 1])
         pdf_filename = f"{filepath}_postprocessing_plot.pdf"
-        plt.savefig(pdf_filename, format='pdf', bbox_inches='tight')
-
+        # plt.savefig(pdf_filename, format='pdf', bbox_inches='tight')
+        plt.show()
 
 if __name__ == "__main__":
     test1()
