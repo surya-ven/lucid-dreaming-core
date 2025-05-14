@@ -5,8 +5,11 @@ from frenztoolkit import Streamer
 import time
 import numpy as np
 import os
+import pandas as pd
+import joblib
+from mne.preprocessing import read_ica
 from datetime import datetime
-from alertness_detection import compute_alertness_score
+from alertness_detection import compute_alertness_score,calculate_ML_based_alertness_score, save_alertness_score
 from test_LRLR_detection import detect_lrlr_in_window
 
 # --- Configuration ---
@@ -45,6 +48,9 @@ custom_metadata_filepath = os.path.join(
 print(
     f"Custom streaming session starting. Data will be saved in: {session_data_path}")
 
+alertness_log_df = pd.DataFrame(columns=["Timestamp", "AlertnessScore"])
+last_alertness_compute_time = 0
+
 # --- Initialize Streamer ---
 streamer = Streamer(
     device_id=DEVICE_ID,
@@ -77,6 +83,9 @@ session_info = {
         "EOG_Filt_1", "EOG_Filt_2", "EOG_Filt_3", "EOG_Filt_4"
     ]
 }
+
+ica_model = read_ica("models/ica_artifact_cleaning.fif")
+lgb_model = joblib.load("models/alertness_lgbm_light.pkl")
 
 data_file_handle = None
 last_metadata_save_time = time.time()
@@ -142,22 +151,28 @@ try:
             # Slice the new samples from the EEG buffer: (4, num_new_samples)
             new_eeg_data = filtered_eeg_buffer[:,
                                                samples_written_count:current_total_samples_in_buffer]
+            if (current_time - last_alertness_compute_time) >= 1.0:
+                if (filtered_eeg_buffer.shape[1] > 500):
+                    # Alertness detection
+                    data = filtered_eeg_buffer.reshape(-1, 4)
+                    latest_alertness_score = calculate_ML_based_alertness_score(data, ica_model, lgb_model)
 
-            if (filtered_eeg_buffer.shape[1] > 2000):
-                # Alertness detection
-                data = filtered_eeg_buffer.reshape(-1, 4)
-                eeg_data = data[:, :4].T
-                _, latest_alertness_score = compute_alertness_score(
-                    eeg_data, sfreq=FS)
-                # print(
-                #     f"Latest alertness score: {latest_alertness_score:.2f}"
-                # )
+                    save_alertness_score(alertness_log_df, latest_alertness_score)
 
-                # LRLR Detection
-                eog_data = filtered_eog_buffer.reshape(-1, 4)
-                test, count = detect_lrlr_in_window(
-                    eog_data, FS, seconds=10, threshold=1, test=False)
-                # print(f"LRLR Detection - Test: {test}, Count: {count}")
+                    smoothed_score = alertness_log_df["AlertnessScore_EMA"].iloc[-1]
+                    print(
+                        f"Raw Latest alertness score: {latest_alertness_score:.2f}"
+                    )
+                    print(f"Smoothed (EMA) alertness score: {smoothed_score:.2f}")
+
+
+                last_alertness_compute_time = current_time
+
+            # LRLR Detection
+            eog_data = filtered_eog_buffer.reshape(-1, 4)
+            test, count = detect_lrlr_in_window(
+                eog_data, FS, seconds=10, threshold=1, test=False)
+            # print(f"LRLR Detection - Test: {test}, Count: {count}")
 
             # Slice the new samples from the EOG buffer: (4, num_new_samples)
             if filtered_eog_buffer is not None and filtered_eog_buffer.ndim == 2 and \

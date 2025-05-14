@@ -1,9 +1,76 @@
+from datetime import datetime
+
 import numpy as np
 import pandas as pd
+import mne
 from mne.time_frequency import psd_array_welch
 from mne.utils import use_log_level
+import numpy as np
+from lightgbm import LGBMRegressor
+from mne.time_frequency import psd_array_welch
+import numpy as np
+import mne
+import joblib
+from mne.preprocessing import read_ica
 
-def compute_alertness_score(data, sfreq=125, win_sec=10, step_sec=1, n_fft=256):
+def preprocess_alertness_data(data, ica_model):
+    raw_data = data.reshape(-1,4).T
+    raw_data = raw_data * 1e-6
+    sfreq = 125
+    ch_names = ['LF-FpZ', 'OTE_L-FpZ', 'RF-FpZ', 'OTE_R-FpZ']
+    ch_types = ['eeg'] * 4
+    info = mne.create_info(ch_names=ch_names, sfreq=sfreq, ch_types=ch_types)
+
+    raw = mne.io.RawArray(raw_data, info)
+
+    data = raw.get_data()
+    data_clean = np.nan_to_num(data, nan=0.0)  # 或填平均值也可
+    raw._data = data_clean
+
+    raw.filter(l_freq=0.5, h_freq=40)
+    raw.notch_filter(freqs=60)
+    ica_model.exclude = [0,1]
+    ica_model.apply(raw)
+    return raw
+
+def calculate_ML_based_alertness_score(data, ica_model, lgb_model):
+    win_sec = 3
+    sfreq = 125
+    processed_data = preprocess_alertness_data(data, ica_model)
+    segment = processed_data.get_data()[:, win_sec * sfreq :]
+
+    alertness_score = predict_alertness_from_segment(segment, 125, lgb_model)
+    return alertness_score
+
+
+def predict_alertness_from_segment(segment, sfreq, model: LGBMRegressor):
+    psd, f = psd_array_welch(segment, sfreq=sfreq, fmin=0.5, fmax=40, n_fft=segment.shape[-1])
+
+    band = lambda lo, hi: psd[:, (f >= lo) & (f < hi)].mean(axis=1).mean()
+
+    alpha, theta = band(8, 12), band(4, 8)
+    beta,  gamma = band(13, 30), band(30, 40)
+    delta = band(0.5, 4)
+
+    features = np.array([
+        alpha, beta, theta, gamma, delta,
+        alpha/theta, beta/theta, beta/alpha,
+        (beta + gamma)/(alpha + theta),
+        theta/(alpha + beta)
+    ]).reshape(1, -1)
+
+    alertness_score = model.predict(features)[0]
+    return alertness_score
+
+def save_alertness_score(df, score):
+    timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    df.loc[len(df)] = {
+        "Timestamp": timestamp_str,
+        "AlertnessScore": score
+    }
+    df["AlertnessScore_EMA"] = df["AlertnessScore"].ewm(span=20, adjust=False).mean()
+
+def compute_alertness_score(data, sfreq=125, win_sec=3, step_sec=1, n_fft=256):
     """
     Compute alertness features and score from EEG data using sliding window PSD analysis.
 
@@ -47,16 +114,20 @@ def compute_alertness_score(data, sfreq=125, win_sec=10, step_sec=1, n_fft=256):
     # Convert to DataFrame
     df = pd.DataFrame(features_over_time)
 
-    # Smooth the alpha/theta and beta/theta ratios with a moving average
     df['alpha_theta_smooth'] = df['alpha_theta_ratio'].rolling(window=3).mean()
     df['beta_theta_smooth']  = df['beta_theta_ratio'].rolling(window=3).mean()
 
-    # Define alertness condition: both smoothed ratios above thresholds
-    df['alert'] = (df['alpha_theta_smooth'] > 0.4) & (df['beta_theta_smooth'] > 0.3)
-    df['alert_int'] = df['alert'].astype(float)
+    df['alpha_theta_score'] = df['alpha_theta_smooth'].clip(0.2, 0.6)
+    df['alpha_theta_score'] = (df['alpha_theta_score'] - 0.2) / (0.6 - 0.2)
 
-    # df['alertness_score'] = df['alert'].rolling(window=50, min_periods=1).mean()
-    df['alertness_score_ema'] = df['alert_int'].ewm(span=10, adjust=False).mean()
+    df['beta_theta_score'] = df['beta_theta_smooth'].clip(0.2, 0.6)
+    df['beta_theta_score'] = (df['beta_theta_score'] - 0.2) / (0.6 - 0.2)
+
+    # Combine both scores
+    df['alertness_score'] = (df['alpha_theta_score'] + df['beta_theta_score']) / 2
+
+    # Final EMA score
+    df['alertness_score_ema'] = df['alertness_score'].ewm(span=100, adjust=True).mean()
 
     # Get the latest alertness score
     latest_score = df['alertness_score_ema'].iloc[-1] if not df.empty else np.nan
