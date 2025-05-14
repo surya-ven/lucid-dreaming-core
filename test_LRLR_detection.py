@@ -4,7 +4,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 from scipy.signal import butter, filtfilt, medfilt, find_peaks, welch
+from sklearn.decomposition import FastICA
+import tensorflow as tf # Added import
+
 import time
+
+
+LRLR_LSTM_MODEL = None
+DEFAULT_LSTM_MODEL_PATH = 'lrlr_lstm_model.keras'
+LSTM_SAMPLE_LENGTH = 750
 
 rec_data_names = [
     "v2_LRLR_once_1_mix",
@@ -31,6 +39,8 @@ rec_data_names = [
 ]
 
 ylim = 500
+
+
 
 def load_custom_data(session_folder_path):
     """
@@ -218,6 +228,31 @@ def plot_eog_events(loaded_data, session_metadata, title = "All Channels"):
         
         plt.show()
 
+def plot_exg_channels(data, colnames=None, target_event=None, ylim=None):
+    fig, axes = plt.subplots(data.shape[1], 1, figsize=(15, 10), sharex=True)
+    if data.shape[1] == 1: # Handle case if there's only 1 column to plot (though we expect 4)
+        axes = [axes] 
+
+    time_vector = np.arange(data.shape[0])  # Timestep of 1/100th of a second
+    for i in range(0,data.shape[1]):
+        ax = axes[i]
+        ax.plot(time_vector, data[:, i])
+        if target_event is not None:
+            ax.fill_between(range(len(target_event)), target_event, color='darkred', edgecolor='darkred', 
+                            linewidth=4,alpha=1, where=(target_event == 1), label="Target Event (filled)")
+
+        title = colnames[i] if colnames is not None else f"Channel {i+1}"
+
+        ax.set_title(title)
+        ax.set_ylabel("Value")
+        if ylim is not None:
+            ax.set_ylim([-ylim, ylim])
+
+        ax.grid(True)
+    plt.tight_layout()
+    plt.show()
+
+
 
 # --- Plotting the last 4 channels (EOG OR EEG) ---
 def plot_eeg_eog_data(loaded_data, session_metadata, colstart=0, colend=4, target_event=None, title="All Channels"):
@@ -232,11 +267,11 @@ def plot_eeg_eog_data(loaded_data, session_metadata, colstart=0, colend=4, targe
         column_names = session_metadata.get('column_names', [f'Ch{i+1}' for i in range(loaded_data.shape[1])])
         plot_column_names = column_names[-4:]
 
-        fig, axes = plt.subplots(3, 1, figsize=(15, 10), sharex=True)
+        fig, axes = plt.subplots(4, 1, figsize=(15, 10), sharex=True)
         if data_to_plot.shape[1] == 1: # Handle case if there's only 1 column to plot (though we expect 4)
             axes = [axes] 
 
-        for i in range(0,2):
+        for i in range(0,4):
             ax = axes[i]
             ax.plot(time_vector, data_to_plot[:, i])
             if target_event is not None:
@@ -249,19 +284,19 @@ def plot_eeg_eog_data(loaded_data, session_metadata, colstart=0, colend=4, targe
             # ax.set_ylim([-ylim, ylim])
             ax.grid(True)
 
-        # Plot 3: LF - RF ## NOTE I DON'T THINK THIS WORKS/HELPS
-        # ------------------------------------------------------
-        ax = axes[2]
-        LH_RH_vector = data_to_plot[:, 0]-data_to_plot[:, 1]
-        ax.plot(time_vector, LH_RH_vector, label="LH-RH")
-        if target_event is not None:
-            ax.fill_between(range(len(target_event)), target_event, color='darkred', edgecolor='darkred', 
-                            linewidth=2,alpha=1, where=(target_event == 1), label="Target Event (filled)")
+        # # Plot 3: LF - RF ## NOTE I DON'T THINK THIS WORKS/HELPS
+        # # ------------------------------------------------------
+        # ax = axes[2]
+        # LH_RH_vector = data_to_plot[:, 0]-data_to_plot[:, 1]
+        # ax.plot(time_vector, LH_RH_vector, label="LH-RH")
+        # if target_event is not None:
+        #     ax.fill_between(range(len(target_event)), target_event, color='darkred', edgecolor='darkred', 
+        #                     linewidth=2,alpha=1, where=(target_event == 1), label="Target Event (filled)")
 
-        ax.set_title(f"Plot of: LH-RH ({title})")
-        ax.set_ylabel("Value")
-        # ax.set_ylim([-ylim, ylim])
-        ax.grid(True)
+        # ax.set_title(f"Plot of: LH-RH ({title})")
+        # ax.set_ylabel("Value")
+        # # ax.set_ylim([-ylim, ylim])
+        # ax.grid(True)
 
         # # Plot 4: OTEL + LF - OTER - RF
         # ax = axes[3]
@@ -601,83 +636,188 @@ def detect_signal_integrity(eog_data, nchannels, print_missing_pcts=False):
 
 
 
-def filter_signal_data(data, srate, mft=5, lowcut=0.5, highcut=15, artifact_threshold=75):
 
-    # # 0. Remove 60 Hz noise using a notch filter. 
-    # # NOT NEEDED FOR FILTERED FRENZ DATA
-    # f, Pxx = welch(eog_data[:, 0], fs=srate) 
 
-    #  # 1. Artifact removal by zeroing values outside threshold ## NOTE NOT USED; LOOKS BAD
-    # for channel in range(data.shape[1]):
-    #     # Find artifact indices where signal exceeds threshold
-    #     artifacts = np.abs(data[:, channel]) > artifact_threshold
+def filter_signal_data(data, srate, mft=5, lowcut=0.5, highcut=15, artifact_threshold=125, apply_ica=True):
+    # Make a copy to avoid modifying the original data
+    data = np.copy(data)
+    n_channels = data.shape[1]
+    print(f"Filtering data with {n_channels} channels")
+    
+    # 1. Artifact removal/rejection with thresholding
+    for channel in range(data.shape[1]):
+        # Find artifact indices where signal exceeds threshold
+        artifacts = np.abs(data[:, channel]) > artifact_threshold
         
-    #     # Replace artifact values with 0
-    #     if np.any(artifacts):
-    #         data[artifacts, channel] = 0
-    #         print(f"Channel {channel}: Zeroed {np.sum(artifacts)} samples ({np.mean(artifacts)*100:.2f}% of data)")
-
-
-    # # 1. Artifact removal/rejection with thresholding
-    # for channel in range(data.shape[1]):
-    #     # Find artifact indices where signal exceeds threshold
-    #     artifacts = np.abs(data[:, channel]) > artifact_threshold
-        
-    #     if np.any(artifacts):
-    #         # Get indices of artifacts
-    #         artifact_indices = np.where(artifacts)[0]
+        if np.any(artifacts):
+            # Get indices of artifacts
+            artifact_indices = np.where(artifacts)[0]
             
-    #         # Process each continuous segment of artifacts
-    #         segments = np.split(artifact_indices, np.where(np.diff(artifact_indices) > 1)[0] + 1)
+            # Process each continuous segment of artifacts
+            segments = np.split(artifact_indices, np.where(np.diff(artifact_indices) > 1)[0] + 1)
             
-    #         for segment in segments:
-    #             if len(segment) > 0:
-    #                 # Get start and end indices of segment
-    #                 start_idx = segment[0]
-    #                 end_idx = segment[-1]
+            for segment in segments:
+                if len(segment) > 0:
+                    # Get start and end indices of segment
+                    start_idx = segment[0]
+                    end_idx = segment[-1]
                     
-    #                 # Get values before and after the artifact segment for interpolation
-    #                 # Handle edge cases where artifact is at beginning or end
-    #                 if start_idx == 0:
-    #                     # Artifact at beginning, use first non-artifact value
-    #                     non_artifact_idx = np.where(~artifacts)[0]
-    #                     if len(non_artifact_idx) > 0:
-    #                         pre_value = data[non_artifact_idx[0], channel]
-    #                     else:
-    #                         pre_value = 0  # All values are artifacts; use 0
-    #                 else:
-    #                     pre_value = data[start_idx-1, channel]
+                    # Get values before and after the artifact segment for interpolation
+                    # Handle edge cases where artifact is at beginning or end
+                    if start_idx == 0:
+                        # Artifact at beginning, use first non-artifact value
+                        non_artifact_idx = np.where(~artifacts)[0]
+                        if len(non_artifact_idx) > 0:
+                            pre_value = data[non_artifact_idx[0], channel]
+                        else:
+                            pre_value = 0  # All values are artifacts; use 0
+                    else:
+                        pre_value = data[start_idx-1, channel]
                         
-    #                 if end_idx == len(data) - 1:
-    #                     # Artifact at end, use last non-artifact value
-    #                     non_artifact_idx = np.where(~artifacts)[0]
-    #                     if len(non_artifact_idx) > 0:
-    #                         post_value = data[non_artifact_idx[-1], channel]
-    #                     else:
-    #                         post_value = 0  # All values are artifacts; use 0
-    #                 else:
-    #                     post_value = data[end_idx+1, channel]
+                    if end_idx == len(data) - 1:
+                        # Artifact at end, use last non-artifact value
+                        non_artifact_idx = np.where(~artifacts)[0]
+                        if len(non_artifact_idx) > 0:
+                            post_value = data[non_artifact_idx[-1], channel]
+                        else:
+                            post_value = 0  # All values are artifacts; use 0
+                    else:
+                        post_value = data[end_idx+1, channel]
                     
-    #                 # Linear interpolation across the artifact segment
-    #                 segment_length = len(segment)
-    #                 for i, idx in enumerate(segment):
-    #                     weight = i / segment_length
-    #                     data[idx, channel] = pre_value * (1 - weight) + post_value * weight
+                    # Linear interpolation across the artifact segment
+                    segment_length = len(segment)
+                    for i, idx in enumerate(segment):
+                        weight = i / segment_length
+                        data[idx, channel] = pre_value * (1 - weight) + post_value * weight
 
+    # # 2. Apply ICA for artifact removal if requested and we have enough channels
+    # if apply_ica and n_channels >= 2:
+    #     try:            
+    #         # Initial filtering to improve ICA performance
+    #         # Apply a lenient bandpass filter before ICA
+    #         b, a = butter(4, [0.1, 20], btype='band', fs=srate)
+    #         data_pre_ica = filtfilt(b, a, data, axis=0)
+            
+    #         # Apply ICA
+    #         ica = FastICA(n_components=n_channels, random_state=42)
+    #         components = ica.fit_transform(data_pre_ica)
+            
+    #         # Identify artifact components automatically
+    #         # Method 1: Components with unusually high kurtosis (peaky/spikey components)
+    #         from scipy.stats import kurtosis
+    #         kurt_values = [kurtosis(components[:, i]) for i in range(n_channels)]
+            
+    #         # Components with kurtosis higher than 2 standard deviations from mean
+    #         # are likely artifact components
+    #         kurt_mean = np.mean(kurt_values)
+    #         kurt_std = np.std(kurt_values)
+    #         artifact_components = [i for i, k in enumerate(kurt_values) 
+    #                              if k > kurt_mean + 2*kurt_std]
+            
+    #         print(f"ICA identified {len(artifact_components)} likely artifact components")
+            
+    #         # Reconstruct signal without artifact components
+    #         mixing_matrix = ica.mixing_
+    #         unmixing_matrix = ica.components_
+            
+    #         # Zero out the artifact components
+    #         clean_components = np.copy(components)
+    #         for artifact_idx in artifact_components:
+    #             clean_components[:, artifact_idx] = 0
+                
+    #         # Reconstruct signal
+    #         reconstructed = np.matmul(clean_components, mixing_matrix.T)
+    #         data = reconstructed
+            
+    #     except (ImportError, ValueError, np.linalg.LinAlgError) as e:
+    #         print(f"ICA processing failed: {e}. Continuing with thresholded data.")
 
-    # 2. Median filter to kill isolated spikes
+    # 3. Median filter to kill isolated spikes
     data = medfilt(data, kernel_size=(mft,1))
 
-
-    # 3. Zero‑phase band‑pass (0.5–15 Hz)
+    # 4. Zero‑phase band‑pass (0.5–15 Hz)
     b, a = butter(4, [lowcut, highcut], btype='band', fs=srate)
     data = filtfilt(b, a, data, axis=0)
-
     
     return data
 
-# def feature_extraction(channel_data, srate):
+
+
+# Helper function for preprocessing, adapted from lstm_data_extraction.py
+def _preprocess_input_for_lstm(data_segment_raw, model_srate_for_filter=118, mft=5, lowcut=0.5, highcut=15, artifact_threshold=125):
+    """
+    Preprocesses a 2-channel data segment (LSTM_SAMPLE_LENGTH, 2) exactly as done for LSTM training.
+    model_srate_for_filter is the sampling rate used for designing the butterworth filter during training.
+    """
+    data = np.copy(data_segment_raw).astype(np.float32) 
     
+    try:
+        data = filter_signal_data(data, srate=model_srate_for_filter, mft=mft, lowcut=lowcut, highcut=highcut, artifact_threshold=artifact_threshold)
+    except ValueError as e:
+        print(f"LSTM Preprocessing Error: Bandpass filtering failed: {e}. Check highcut vs model_srate_for_filter/2.")
+        return np.zeros_like(data_segment_raw) # Return zeros or raise error
+
+    # Normalization (per-channel z-score)
+    mean = np.mean(data, axis=0)
+    std = np.std(data, axis=0)
+    # Add epsilon to std to prevent division by zero if a channel is flat after filtering
+    normalized_data = (data - mean) / (std + 1e-8)
+
+    return normalized_data
+
+def detect_lrlr_window_from_lstm(eog_data, srate, model_path=DEFAULT_LSTM_MODEL_PATH, detection_threshold=0.5):
+    """
+    Detects LRLR patterns using the trained LSTM model.
+
+    Args:
+        eog_data (np.ndarray): EOG data array, expected to have at least 2 channels.
+                               The first two channels will be used.
+        srate (float): Sampling rate of the input eog_data. (Currently used for context,
+                       filter design uses a fixed srate from training).
+        model_path (str): Path to the Keras LSTM model file.
+        detection_threshold (float): Threshold for classifying a prediction as LRLR.
+
+    Returns:
+        bool: True if LRLR is detected, False otherwise.
+    """
+    global LRLR_LSTM_MODEL
+    if LRLR_LSTM_MODEL is None:
+        try:
+            LRLR_LSTM_MODEL = tf.keras.models.load_model(model_path)
+            print(f"LSTM model '{model_path}' loaded successfully.")
+        except Exception as e:
+            print(f"Error loading LSTM model from '{model_path}': {e}")
+            return False # Cannot proceed without the model
+
+    if eog_data.shape[0] < LSTM_SAMPLE_LENGTH:
+        # print(f"Warning: EOG data too short for LSTM ({eog_data.shape[0]} samples, need {LSTM_SAMPLE_LENGTH}).")
+        return False
+    
+    if eog_data.shape[1] < 2:
+        print(f"Warning: EOG data has fewer than 2 channels ({eog_data.shape[1]}). LSTM requires 2.")
+        return False
+
+    # Extract the last LSTM_SAMPLE_LENGTH samples from the first two channels
+    # Assumes eog_data's first two columns are the ones the LSTM was trained on.
+    eog_segment_raw = eog_data[-LSTM_SAMPLE_LENGTH:, 0:2]
+
+    # Preprocess the segment
+    # model_srate_for_filter=118 is used internally as that's what the model was trained with.
+    preprocessed_segment = _preprocess_input_for_lstm(eog_segment_raw, model_srate_for_filter=118)
+
+    # Reshape for model prediction: (1, timesteps, features)
+    model_input = np.expand_dims(preprocessed_segment, axis=0)
+
+    # Predict
+    try:
+        prediction_value = LRLR_LSTM_MODEL.predict(model_input, verbose=0)[0][0]
+        is_lrlr = prediction_value > detection_threshold
+        # print(f"LSTM Prediction: {prediction_value:.4f} -> Detected: {is_lrlr}") # For debugging
+        return is_lrlr, prediction_value
+    except Exception as e:
+        print(f"Error during LSTM prediction: {e}")
+        return False, 0.0 # Return a default value for the prediction if an error occurs
+
 
 def main2():
 
@@ -725,63 +865,46 @@ def main2():
 # # --- Example of filtering and processing and LRLR checking the loaded data ---
 def main():
 
-    # <<< PLEASE UPDATE THIS PATH >>> ## TO COPY LRLR_1_time_1 ALERTNESS_3minmark_1
-    SESSION_FOLDER_PATH = "recorded_data/v2_LRLR_once_8_closed"
-
-    print(f"Attempting to load data from: {SESSION_FOLDER_PATH}")
-    loaded_data, session_metadata = load_custom_data(SESSION_FOLDER_PATH)
-
-    if loaded_data is None or session_metadata is None:
-        print("Failed to load data or metadata. Exiting.")
-        return
-    display_loaded_data_and_metadata(loaded_data, session_metadata)
+    for filepath in rec_data_names[4:11]:
+        SESSION_FOLDER_PATH = f"recorded_data/{filepath}"
 
 
+        print(f"Attempting to load data from: {SESSION_FOLDER_PATH}")
+        loaded_data, session_metadata = load_custom_data(SESSION_FOLDER_PATH)
 
-    srate = 125  # Sampling frequency in Hz
-    eog_data = loaded_data[:,-4:]
+        if loaded_data is None or session_metadata is None:
+            print("Failed to load data or metadata. Exiting.")
+            return
 
-
-    # # 1. Remove 60 Hz noise using a notch filter/Look to see if this is needed
-    # f, Pxx = welch(eog_data[:, 0], fs=srate) 
-
-    # 2. Zero‑phase band‑pass (0.5–15 Hz)
-    b, a  = butter(4, [0.5, 3], btype='band', fs=srate)
-    eog_data    = filtfilt(b, a, eog_data, axis=0)
-
-    # 3. Median filter to kill isolated spikes
-    eog_data = medfilt(eog_data, kernel_size=(3,1))
+        srate = 118  # Sampling frequency in Hz
+        eog_data = loaded_data[:,-4:]
 
 
-    ## -- TESTING ALGS -- ##
+        ## -- TESTING ALGS -- ##
 
-    s = 10
-    # LRLR detection & time
-    print(f"\nDetecting LRLR patterns in the last {s} seconds of EOG data...")
-    start_time = time.time()
-    test, count = detect_lrlr_in_window(eog_data, srate, seconds=s, threshold=1, test=False)
-    end_time = time.time()
-    execution_time = end_time - start_time # Execution time: 0.0018 seconds; 1.8 ms/milliseconds
+        # LRLR detection & time
+        print(f"\nDetecting LRLR patterns in the last 750 instances of EOG data...")
+        start_time = time.time()
+        test, count = detect_lrlr_window_from_lstm(eog_data, srate)
+        end_time = time.time()
+        execution_time = end_time - start_time # Execution time: 0.0018 seconds; 1.8 ms/milliseconds
 
-    print(f"  --LRLR detected: {test}, Count: {count}")
-    print(f"  --Execution time: {execution_time:.4f} seconds, {1000*execution_time:.4f} ms")
+        print(f"  --LRLR detected: {test}, Count: {count}")
+        print(f"  --Execution time: {execution_time:.4f} seconds, {1000*execution_time:.4f} ms")
 
-    # REM detection & time
-    print(f"\nDetecting REM patterns in the last {s} seconds of EOG data...")
-    start_time = time.time()
-    REM_test, REM_count = detect_REM_in_window(eog_data, srate, seconds=s, test=False)
-    end_time = time.time()
-    REM_execution_time = end_time - start_time
+        # # REM detection & time
+        # print(f"\nDetecting REM patterns in the last {s} seconds of EOG data...")
+        # start_time = time.time()
+        # REM_test, REM_count = detect_REM_in_window(eog_data, srate, seconds=s, test=False)
+        # end_time = time.time()
+        # REM_execution_time = end_time - start_time
 
-    print(f"  --REM detected: {REM_test}, Count: {REM_count}")
-    print(f"  --Execution time: {REM_execution_time:.4f} seconds, {1000*REM_execution_time:.4f} ms")
-
-
-    # # Plot the channels
-    plot_eeg_eog_data(eog_data, session_metadata, colstart=0, colend=4)
+        # print(f"  --REM detected: {REM_test}, Count: {REM_count}")
+        # print(f"  --Execution time: {REM_execution_time:.4f} seconds, {1000*REM_execution_time:.4f} ms")
 
 
-    print(f"LRLR detected: {test}, Count: {count}")
+        # # Plot the channels
+        # plot_eeg_eog_data(eog_data, session_metadata, colstart=0, colend=4)
 
 def test1():
     # <<< PLEASE UPDATE THIS PATH >>> ## TO COPY LRLR_1_time_1 ALERTNESS_3minmark_1
@@ -797,19 +920,24 @@ def test1():
 
         ## Filtering and processing
         eog_data = loaded_data[:2000,-4:]
+        display_loaded_data_and_metadata(loaded_data, session_metadata)
+        # data = np.concatenate((eeg_data[:,0:2], eog_data[:,0:2]), axis=1)
+        # print(f"shape of data: {data.shape}")
+        # plot_exg_channels(data, target_event=loaded_data[:2000, 1])
+
 
         plot_eeg_eog_data(eog_data, session_metadata, title="pre filter", target_event=loaded_data[:2000, 1])
-        pdf_filename = f"{filepath}_preprocessing_plot.pdf"
-        # plt.savefig(pdf_filename, format='pdf', bbox_inches='tight')
         plt.show()
+
         
         eog_filt_data = filter_signal_data(eog_data, srate=118, mft=7, lowcut=0.2, highcut=3, artifact_threshold=75)
 
         plot_eeg_eog_data(eog_filt_data, session_metadata, title="post filter", target_event=loaded_data[:2000, 1])
-        pdf_filename = f"{filepath}_postprocessing_plot.pdf"
+        # pdf_filename = f"{filepath}_postprocessing_plot.pdf"
         # plt.savefig(pdf_filename, format='pdf', bbox_inches='tight')
         plt.show()
 
+
 if __name__ == "__main__":
-    test1()
+    main()
 
