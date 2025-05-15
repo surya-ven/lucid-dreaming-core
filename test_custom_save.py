@@ -12,6 +12,9 @@ from datetime import datetime
 from alertness_detection import compute_alertness_score, calculate_ML_based_alertness_score, save_alertness_score
 from test_LRLR_detection import detect_lrlr_window_from_lstm, LSTM_SAMPLE_LENGTH
 
+# For plotting
+import matplotlib.pyplot as plt
+
 # --- Configuration ---
 PRODUCT_KEY = "RUtYA4W3kpXi0i9C7VZCQJY5_GRhm4XL2rKp6cviwQI="  # Your actual product key
 DEVICE_ID = "FRENZI40"  # Your actual device ID
@@ -24,12 +27,18 @@ NUM_COMBINED_COLUMNS = 12
 FS = 125.0  # Sampling Frequency in Hz (Observed, NEEDS VERIFICATION)
 
 # --- Argument Parsing ---
+
 parser = argparse.ArgumentParser(
     description="FrenzToolkit Custom Data Streamer with Event Logging")
 parser.add_argument(
     "--log-events",
     action="store_true",
     help="Enable keyboard input (S/E) for logging target event periods."
+)
+parser.add_argument(
+    "--plot-live",
+    action="store_true",
+    help="Enable live plotting of alertness and LRLR detection (latest 20s, starts after 30s)."
 )
 cli_args = parser.parse_args()
 
@@ -50,9 +59,17 @@ print(
     f"Custom streaming session starting. Data will be saved in: {session_data_path}")
 
 alertness_log_df = pd.DataFrame(columns=["Timestamp", "AlertnessScore"])
+
 last_alertness_compute_time = 0
 last_LRLR_compute_time = 0
 lrlr_result = None
+
+# For live plotting
+alertness_plot_times = []  # seconds since session start
+alertness_plot_scores = []
+lrlr_plot_times = []  # seconds since session start
+lrlr_plot_values = []  # 1 if LRLR detected, 0 otherwise
+plot_initialized = False
 
 # --- Initialize Streamer ---
 streamer = Streamer(
@@ -104,6 +121,12 @@ try:
         print("\nEvent logging enabled. Press 'S' then Enter to START an event, 'E' then Enter to END an event.")
         print("You can do this multiple times during the session.\n")
 
+    if cli_args.plot_live:
+        plt.ion()
+        fig, ax1 = plt.subplots()
+        ax2 = ax1.twinx()
+        plot_initialized = True
+
     while True:
         current_time = time.time()
         session_duration_seconds = streamer.session_dur
@@ -154,7 +177,6 @@ try:
         num_new_samples = current_total_samples_in_buffer - samples_written_count
 
         if num_new_samples > 0:
-
             # Slice the new samples from the EEG buffer: (4, num_new_samples)
             new_eeg_data = filtered_eeg_buffer[:,
                                                samples_written_count:current_total_samples_in_buffer]
@@ -164,17 +186,21 @@ try:
                filtered_eog_buffer.shape[0] == 4 and filtered_eog_buffer.shape[1] >= current_total_samples_in_buffer:
                 new_eog_data = filtered_eog_buffer[:,
                                                    samples_written_count:current_total_samples_in_buffer]
-                
+
                 if (current_time - last_LRLR_compute_time) >= 1.0:
                     if (filtered_eog_buffer.shape[1] > LSTM_SAMPLE_LENGTH):
                         # Detect LRLR in the new EOG data
                         lrlr_result = detect_lrlr_window_from_lstm(
-                            filtered_eog_buffer.T, srate=118)
+                            filtered_eog_buffer.T, srate=118, detection_threshold=0.51)
                         if lrlr_result is not None:
                             test, count = lrlr_result
+                            # For plotting: mark LRLR event (binary or count)
+                            if cli_args.plot_live:
+                                lrlr_plot_times.append(
+                                    session_duration_seconds)
+                                lrlr_plot_values.append(1 if test else 0)
 
                         last_LRLR_compute_time = current_time
-                
             else:
                 new_eog_data = np.full(
                     (4, num_new_samples), np.nan, dtype=EEG_DATA_TYPE)
@@ -185,7 +211,7 @@ try:
                 # Only take the last num_new_samples rows
                 new_raw_eeg_data = raw_eeg_buffer[-num_new_samples:,
                                                   [0, 1, 3, 4]].T
-                
+
                 # Detect alertness using the latest raw EEG data
                 raw_eeg_data = raw_eeg_buffer[:, [0, 1, 3, 4]].T
                 if (current_time - last_alertness_compute_time) >= 1.0:
@@ -199,16 +225,21 @@ try:
 
                         smoothed_score = alertness_log_df["AlertnessScore_EMA"].iloc[-1]
                         print(
-                            f"Raw Latest alertness score: {latest_alertness_score:.2f}"
-                        )
+                            f"Raw Latest alertness score: {latest_alertness_score:.2f}")
                         print(
                             f"Smoothed (EMA) alertness score: {smoothed_score:.2f}")
+
+                        # For plotting: append time and score
+                        if cli_args.plot_live:
+                            alertness_plot_times.append(
+                                session_duration_seconds)
+                            alertness_plot_scores.append(smoothed_score)
 
                         last_alertness_compute_time = current_time
             else:
                 new_raw_eeg_data = np.full(
                     (4, num_new_samples), np.nan, dtype=EEG_DATA_TYPE)
-            
+
             if lrlr_result is not None:
                 print(f"LRLR detection result: {test}, count: {count}")
 
@@ -225,6 +256,48 @@ try:
                 all_data_to_write.astype(EEG_DATA_TYPE).tobytes())
             # Update samples_written_count to the new total number of samples processed (per channel)
             samples_written_count = current_total_samples_in_buffer
+
+        # --- Live Plotting ---
+        if cli_args.plot_live and session_duration_seconds > 30:
+            # Only plot the latest 20 seconds
+            plot_window = 20
+            min_time = session_duration_seconds - plot_window
+            # Filter alertness data
+            alert_times = np.array(alertness_plot_times)
+            alert_scores = np.array(alertness_plot_scores)
+            mask_alert = alert_times >= min_time
+            # Filter LRLR data
+            lrlr_times = np.array(lrlr_plot_times)
+            lrlr_vals = np.array(lrlr_plot_values)
+            mask_lrlr = lrlr_times >= min_time
+
+            if not plot_initialized:
+                plt.ion()
+                fig, ax1 = plt.subplots()
+                ax2 = ax1.twinx()
+                plot_initialized = True
+            else:
+                ax1.cla()
+                ax2.cla()
+
+            # Plot alertness
+            if np.any(mask_alert):
+                ax1.plot(
+                    alert_times[mask_alert], alert_scores[mask_alert], 'b-', label="Alertness (EMA)")
+            ax1.set_ylabel("Alertness Score (EMA)", color='b')
+            ax1.set_xlabel("Time (s)")
+            ax1.set_ylim(0, 1)
+
+            # Plot LRLR
+            if np.any(mask_lrlr):
+                ax2.plot(
+                    lrlr_times[mask_lrlr], lrlr_vals[mask_lrlr], 'r.-', label="LRLR Detected")
+            ax2.set_ylabel("LRLR Detected", color='r')
+            ax2.set_ylim(-0.1, 1.1)
+
+            plt.title("Live Alertness & LRLR Detection (last 20s)")
+            plt.tight_layout()
+            plt.pause(0.01)
 
         # --- Metadata Collection (timestamps and session duration) ---
         metadata_timestamps.append(current_time)
@@ -278,5 +351,8 @@ finally:
         print(f"Error during final metadata save: {e_save_final}")
         pass
 
+    if cli_args.plot_live:
+        plt.ioff()
+        plt.show()
     print(
         f"Custom streaming session ended. Data saved in: {session_data_path}")
