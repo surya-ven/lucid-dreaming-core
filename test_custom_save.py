@@ -172,6 +172,8 @@ try:
                 # Only take the last num_new_samples rows
                 new_raw_eeg_data = raw_eeg_buffer[-num_new_samples:,
                                                   [0, 1, 3, 4]].T
+                print(f"New raw EEG data: {raw_eeg_buffer[-num_new_samples:, [0, 1, 3, 4]]}")
+                # OTEL (3rd), LF, RF, OTER
             else:
                 new_raw_eeg_data = np.full(
                     (4, num_new_samples), np.nan, dtype=EEG_DATA_TYPE)
