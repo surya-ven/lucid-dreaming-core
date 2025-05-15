@@ -130,6 +130,7 @@ try:
         # streamer.DATA["FILTERED"]["EOG"] is expected to be (4, N_total_accumulated_samples)
         filtered_eeg_buffer = streamer.DATA["FILTERED"]["EEG"]
         filtered_eog_buffer = streamer.DATA["FILTERED"]["EOG"]
+        raw_eeg_buffer = streamer.DATA["RAW"]["EEG"]
 
         # detecting alertness using filtered eeg data
         # data source could be replaced further
@@ -152,9 +153,11 @@ try:
             new_eeg_data = filtered_eeg_buffer[:,
                                                samples_written_count:current_total_samples_in_buffer]
             if (current_time - last_alertness_compute_time) >= 1.0:
-                if (filtered_eeg_buffer.shape[1] > 500):
+                if (raw_eeg_buffer.shape[1] > 500):
                     # Alertness detection
-                    data = filtered_eeg_buffer.reshape(-1, 4)
+                    nonzero_channel_mask = ~(np.all(raw_eeg_buffer == 0, axis = 1))
+                    data = raw_eeg_buffer[nonzero_channel_mask]
+                    # make sure data is in shape of (4, N)
                     latest_alertness_score = calculate_ML_based_alertness_score(data, ica_model, lgb_model)
 
                     save_alertness_score(alertness_log_df, latest_alertness_score)

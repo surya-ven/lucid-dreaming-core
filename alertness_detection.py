@@ -14,8 +14,9 @@ import joblib
 from mne.preprocessing import read_ica
 
 def preprocess_alertness_data(data, ica_model):
-    raw_data = data.reshape(-1,4).T
-    raw_data = raw_data * 1e-6
+    # raw_data = data.reshape(-1,4).T
+    raw_data = data
+    raw_data = raw_data
     sfreq = 125
     ch_names = ['LF-FpZ', 'OTE_L-FpZ', 'RF-FpZ', 'OTE_R-FpZ']
     ch_types = ['eeg'] * 4
@@ -24,7 +25,7 @@ def preprocess_alertness_data(data, ica_model):
     raw = mne.io.RawArray(raw_data, info)
 
     data = raw.get_data()
-    data_clean = np.nan_to_num(data, nan=0.0)  # 或填平均值也可
+    data_clean = np.nan_to_num(data, nan=0.0)
     raw._data = data_clean
 
     raw.filter(l_freq=0.5, h_freq=40)
@@ -37,7 +38,7 @@ def calculate_ML_based_alertness_score(data, ica_model, lgb_model):
     win_sec = 3
     sfreq = 125
     processed_data = preprocess_alertness_data(data, ica_model)
-    segment = processed_data.get_data()[:, win_sec * sfreq :]
+    segment = processed_data.get_data()[:, -win_sec * sfreq :]
 
     alertness_score = predict_alertness_from_segment(segment, 125, lgb_model)
     return alertness_score
