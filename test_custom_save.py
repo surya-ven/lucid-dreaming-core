@@ -10,7 +10,7 @@ import joblib
 from mne.preprocessing import read_ica
 from datetime import datetime
 from alertness_detection import compute_alertness_score, calculate_ML_based_alertness_score, save_alertness_score
-from test_LRLR_detection import detect_lrlr_in_window
+from test_LRLR_detection import detect_lrlr_window_from_lstm, LSTM_SAMPLE_LENGTH
 
 # --- Configuration ---
 PRODUCT_KEY = "RUtYA4W3kpXi0i9C7VZCQJY5_GRhm4XL2rKp6cviwQI="  # Your actual product key
@@ -21,7 +21,7 @@ EEG_DATA_TYPE = np.float32  # Data type for saving EEG samples
 # EEG_filt(4) + EOG_filt(4) + RAW_EEG_SELECTED(4)
 # Now 12 columns: 4 filtered EEG, 4 filtered EOG, 4 raw EEG (cols 0,1,3,4)
 NUM_COMBINED_COLUMNS = 12
-FS = 126.0  # Sampling Frequency in Hz (Observed, NEEDS VERIFICATION)
+FS = 125.0  # Sampling Frequency in Hz (Observed, NEEDS VERIFICATION)
 
 # --- Argument Parsing ---
 parser = argparse.ArgumentParser(
@@ -51,6 +51,8 @@ print(
 
 alertness_log_df = pd.DataFrame(columns=["Timestamp", "AlertnessScore"])
 last_alertness_compute_time = 0
+last_LRLR_compute_time = 0
+lrlr_result = None
 
 # --- Initialize Streamer ---
 streamer = Streamer(
@@ -162,6 +164,17 @@ try:
                filtered_eog_buffer.shape[0] == 4 and filtered_eog_buffer.shape[1] >= current_total_samples_in_buffer:
                 new_eog_data = filtered_eog_buffer[:,
                                                    samples_written_count:current_total_samples_in_buffer]
+                
+                if (current_time - last_LRLR_compute_time) >= 1.0:
+                    if (filtered_eog_buffer.shape[1] > LSTM_SAMPLE_LENGTH):
+                        # Detect LRLR in the new EOG data
+                        lrlr_result = detect_lrlr_window_from_lstm(
+                            filtered_eog_buffer.T, srate=118)
+                        if lrlr_result is not None:
+                            test, count = lrlr_result
+
+                        last_LRLR_compute_time = current_time
+                
             else:
                 new_eog_data = np.full(
                     (4, num_new_samples), np.nan, dtype=EEG_DATA_TYPE)
@@ -172,11 +185,32 @@ try:
                 # Only take the last num_new_samples rows
                 new_raw_eeg_data = raw_eeg_buffer[-num_new_samples:,
                                                   [0, 1, 3, 4]].T
-                print(f"New raw EEG data: {raw_eeg_buffer[-num_new_samples:, [0, 1, 3, 4]]}")
-                # OTEL (3rd), LF, RF, OTER
+                
+                # Detect alertness using the latest raw EEG data
+                raw_eeg_data = raw_eeg_buffer[:, [0, 1, 3, 4]].T
+                if (current_time - last_alertness_compute_time) >= 1.0:
+                    if (raw_eeg_buffer.shape[0] > 500):
+                        # make sure data is in shape of (4, N)
+                        latest_alertness_score = calculate_ML_based_alertness_score(
+                            raw_eeg_data, ica_model, lgb_model)
+
+                        save_alertness_score(
+                            alertness_log_df, latest_alertness_score)
+
+                        smoothed_score = alertness_log_df["AlertnessScore_EMA"].iloc[-1]
+                        print(
+                            f"Raw Latest alertness score: {latest_alertness_score:.2f}"
+                        )
+                        print(
+                            f"Smoothed (EMA) alertness score: {smoothed_score:.2f}")
+
+                        last_alertness_compute_time = current_time
             else:
                 new_raw_eeg_data = np.full(
                     (4, num_new_samples), np.nan, dtype=EEG_DATA_TYPE)
+            
+            if lrlr_result is not None:
+                print(f"LRLR detection result: {test}, count: {count}")
 
             # Combine EEG, EOG, and raw EEG data by stacking vertically: (8+4=12, num_new_samples)
             all_data_to_write = np.vstack(

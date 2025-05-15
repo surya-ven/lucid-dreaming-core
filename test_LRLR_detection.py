@@ -790,7 +790,7 @@ def detect_lrlr_window_from_lstm(eog_data, srate, model_path=DEFAULT_LSTM_MODEL_
             return False # Cannot proceed without the model
 
     if eog_data.shape[0] < LSTM_SAMPLE_LENGTH:
-        # print(f"Warning: EOG data too short for LSTM ({eog_data.shape[0]} samples, need {LSTM_SAMPLE_LENGTH}).")
+        print(f"Warning: EOG data too short for LSTM ({eog_data.shape[0]} samples, need {LSTM_SAMPLE_LENGTH}).")
         return False
     
     if eog_data.shape[1] < 2:
@@ -810,6 +810,7 @@ def detect_lrlr_window_from_lstm(eog_data, srate, model_path=DEFAULT_LSTM_MODEL_
 
     # Predict
     try:
+        # print(f"Model input shape: {model_input.shape}")
         prediction_value = LRLR_LSTM_MODEL.predict(model_input, verbose=0)[0][0]
         is_lrlr = prediction_value > detection_threshold
         # print(f"LSTM Prediction: {prediction_value:.4f} -> Detected: {is_lrlr}") # For debugging
