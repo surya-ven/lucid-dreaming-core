@@ -5,7 +5,9 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
-#   "frenztoolkit>=0.2.0", ## This does not work on Benji's machine
+    "frenztoolkit>=0.2.3",
+    "lightgbm>=4.6.0",
+    #   "frenztoolkit>=0.2.0", ## This does not work on Benji's machine
     "matplotlib>=3.9.4",
     "mne>=1.8.0",
     "numpy>=1.26.4",
