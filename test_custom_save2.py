@@ -10,6 +10,7 @@ from datetime import datetime
 
 # For plotting
 import matplotlib.pyplot as plt
+from scipy.signal import butter, filtfilt, medfilt  # Added imports
 
 # --- Configuration ---
 PRODUCT_KEY = "RUtYA4W3kpXi0i9C7VZCQJY5_GRhm4XL2rKp6cviwQI="  # Your actual product key
@@ -33,10 +34,29 @@ parser.add_argument(
 )
 parser.add_argument(
     "--plot-live",
-    action="store_true",
-    help="Enable live plotting of Raw EEG, Filtered EEG, and EOG signals (latest 20s)."
+    nargs='?',
+    const=True,
+    default=False,
+    help="Enable live plotting of Raw EEG, Filtered EEG, and EOG signals (latest 20s). Optionally specify a channel number (1-4) to plot only that channel."
 )
 cli_args = parser.parse_args()
+
+# Determine which channel to plot (if any)
+plot_live_channel = None
+if cli_args.plot_live is True:
+    plot_live_enabled = True
+elif cli_args.plot_live is not False:
+    try:
+        ch = int(cli_args.plot_live)
+        if 1 <= ch <= 4:
+            plot_live_channel = ch - 1  # zero-based index
+            plot_live_enabled = True
+        else:
+            plot_live_enabled = False
+    except Exception:
+        plot_live_enabled = False
+else:
+    plot_live_enabled = False
 
 # --- Session Setup ---
 session_start_time_obj = datetime.now()
@@ -97,6 +117,102 @@ session_info = {
     ]
 }
 
+# --- Helper function to process EOG for plotting ---
+
+
+def process_eog_for_plotting(data, srate, lowcut=0.5, highcut=3.0, artifact_threshold=100, mft_kernel_size=5):
+    """
+    Processes EOG data for clearer live plotting, focusing on eye movement frequencies.
+    Applies artifact rejection, median filtering, and bandpass filtering.
+    """
+    processed_data = np.copy(data)
+    if processed_data.ndim == 1:  # Handle single channel data
+        # Convert to (samples, 1)
+        processed_data = processed_data[:, np.newaxis]
+
+    min_len_for_butter = 3 * (4 + 1)  # (order + 1) * 3 for filtfilt
+    if processed_data.shape[0] < max(mft_kernel_size, min_len_for_butter):
+        return processed_data
+
+    n_channels = processed_data.shape[1]
+
+    # 1. Artifact removal/rejection with thresholding
+    for channel in range(n_channels):
+        channel_data = processed_data[:, channel]
+        artifacts = np.abs(channel_data) > artifact_threshold
+
+        if np.any(artifacts):
+            artifact_indices = np.where(artifacts)[0]
+            diff_indices = np.diff(artifact_indices)
+            split_points = np.where(diff_indices > 1)[0] + 1
+            segments = np.split(artifact_indices, split_points)
+
+            for segment in segments:
+                if len(segment) > 0:
+                    start_idx = segment[0]
+                    end_idx = segment[-1]
+
+                    pre_value = 0
+                    if start_idx == 0:
+                        non_artifact_after_segment = np.where(
+                            ~artifacts[end_idx+1:])[0]
+                        if len(non_artifact_after_segment) > 0:
+                            pre_value = channel_data[end_idx +
+                                                     1 + non_artifact_after_segment[0]]
+                        else:
+                            pre_value = channel_data[end_idx] if end_idx < len(
+                                channel_data) else 0
+                    else:
+                        pre_value = channel_data[start_idx-1]
+
+                    post_value = 0
+                    if end_idx == len(channel_data) - 1:
+                        non_artifact_before_segment = np.where(
+                            ~artifacts[:start_idx])[0]
+                        if len(non_artifact_before_segment) > 0:
+                            post_value = channel_data[non_artifact_before_segment[-1]]
+                        else:
+                            post_value = channel_data[start_idx] if start_idx > 0 else 0
+                    else:
+                        post_value = channel_data[end_idx+1]
+
+                    segment_length = len(segment)
+                    if segment_length > 0:
+                        x_interp = np.array([start_idx - 1, end_idx + 1])
+                        y_interp = np.array([pre_value, post_value])
+                        x_segment = segment
+                        if x_interp[0] < x_segment[0] and x_interp[1] > x_segment[-1]:
+                            interp_values = np.interp(
+                                x_segment, x_interp, y_interp)
+                            processed_data[segment, channel] = interp_values
+
+    # 2. Median filter
+    actual_mft_kernel_size = mft_kernel_size
+    if actual_mft_kernel_size % 2 == 0:
+        actual_mft_kernel_size += 1
+
+    if processed_data.shape[0] >= actual_mft_kernel_size:
+        try:
+            processed_data = medfilt(
+                processed_data, kernel_size=(actual_mft_kernel_size, 1))
+        except ValueError:
+            pass
+
+    # 3. Zero-phase band-pass filter
+    nyquist = srate / 2.0
+    actual_highcut = min(highcut, nyquist - 0.01)
+    actual_lowcut = max(0.01, lowcut)
+
+    if actual_highcut > actual_lowcut and processed_data.shape[0] > min_len_for_butter:
+        try:
+            b, a = butter(4, [actual_lowcut, actual_highcut],
+                          btype='band', fs=srate)
+            processed_data = filtfilt(b, a, processed_data, axis=0)
+        except ValueError as e:
+            pass
+    return processed_data
+
+
 data_file_handle = None
 last_metadata_save_time = time.time()
 
@@ -110,16 +226,17 @@ try:
         print("\nEvent logging enabled. Press 'S' then Enter to START an event, 'E' then Enter to END an event.")
         print("You can do this multiple times during the session.\n")
 
-    if cli_args.plot_live:
+    if plot_live_enabled:
         plt.ion()
         fig, (ax_raw_eeg, ax_filt_eeg, ax_filt_eog) = plt.subplots(
             3, 1, sharex=True, figsize=(12, 10))
         ax_raw_eeg.set_title("Raw EEG Signals")
-        ax_filt_eeg.set_title("Filtered EEG Signals")
-        ax_filt_eog.set_title("Filtered EOG Signals")
+        ax_filt_eeg.set_title("Filtered EOG Signals")  # Corrected Title
+        ax_filt_eog.set_title(
+            "Filtered EOG Signals (Processed for Eye Movements)")
 
         ax_raw_eeg.set_ylabel("Amplitude")
-        ax_filt_eeg.set_ylabel("Amplitude")
+        ax_filt_eeg.set_ylabel("Amplitude")  # Corrected Label
         ax_filt_eog.set_ylabel("Amplitude")
         ax_filt_eog.set_xlabel("Session Time (s)")
         plot_initialized = True
@@ -152,9 +269,9 @@ try:
         # --- Data Handling ---
         # streamer.DATA["FILTERED"]["EEG"] is expected to be (4, N_total_accumulated_samples)
         # streamer.DATA["FILTERED"]["EOG"] is expected to be (4, N_total_accumulated_samples)
+        # streamer.DATA["RAW"]["EEG"] is expected to be (N_total_accumulated_samples, 6)
         filtered_eeg_buffer = streamer.DATA["FILTERED"]["EEG"]
         filtered_eog_buffer = streamer.DATA["FILTERED"]["EOG"]
-        # streamer.DATA["RAW"]["EEG"] is expected to be (N_total_accumulated_samples, 6)
         raw_eeg_buffer = streamer.DATA["RAW"]["EEG"]
 
         # Determine the total number of samples currently available in the buffer (per channel)
@@ -162,8 +279,6 @@ try:
         if filtered_eeg_buffer is not None and filtered_eeg_buffer.ndim == 2 and filtered_eeg_buffer.shape[0] == 4:
             current_total_samples_in_buffer = filtered_eeg_buffer.shape[1]
         else:
-            # If EEG buffer is not as expected, assume no new valid samples can be determined from it.
-            # samples_written_count will remain unchanged, so num_new_samples will be <= 0.
             current_total_samples_in_buffer = samples_written_count
 
         num_new_samples = current_total_samples_in_buffer - samples_written_count
@@ -185,7 +300,6 @@ try:
             # Slice the new samples from the RAW EEG buffer: (num_new_samples, 6)
             # Save columns [0, 1, 3, 4] as (4, num_new_samples)
             if raw_eeg_buffer is not None and raw_eeg_buffer.ndim == 2 and raw_eeg_buffer.shape[1] >= 5:
-                # Only take the last num_new_samples rows
                 new_raw_eeg_data = raw_eeg_buffer[-num_new_samples:,
                                                   [0, 1, 3, 4]].T
             else:
@@ -203,14 +317,11 @@ try:
             # Write to .dat file
             data_file_handle.write(
                 all_data_to_write.astype(EEG_DATA_TYPE).tobytes())
-            # Update samples_written_count to the new total number of samples processed (per channel)
             samples_written_count = current_total_samples_in_buffer
 
             # --- Populate data for plotting ---
-            if cli_args.plot_live and plot_initialized:
-                # Generate timestamps for the new samples
+            if plot_live_enabled and plot_initialized:
                 block_end_time = session_duration_seconds
-                # Ensure FS is float for division
                 block_start_time = block_end_time - \
                     (num_new_samples - 1) / \
                     float(FS) if num_new_samples > 0 else block_end_time
@@ -221,7 +332,7 @@ try:
                 for i in range(4):  # Assuming 4 channels for each
                     if new_raw_eeg_data.shape[0] == 4 and new_raw_eeg_data.shape[1] == num_new_samples:
                         plot_data_raw_eeg[i].extend(new_raw_eeg_data[i, :])
-                    else:  # Fill with NaNs if data is not as expected, to keep lists aligned
+                    else:
                         plot_data_raw_eeg[i].extend([np.nan] * num_new_samples)
 
                     if new_eeg_data.shape[0] == 4 and new_eeg_data.shape[1] == num_new_samples:
@@ -236,7 +347,6 @@ try:
                         plot_data_filt_eog[i].extend(
                             [np.nan] * num_new_samples)
 
-                # Trim data to PLOT_WINDOW_DURATION_S
                 if plot_timestamps:
                     min_plot_time = plot_timestamps[-1] - \
                         PLOT_WINDOW_DURATION_S
@@ -253,48 +363,97 @@ try:
                         plot_data_filt_eog[i] = plot_data_filt_eog[i][start_idx:]
 
         # --- Live Plotting ---
-        if cli_args.plot_live and plot_initialized and plot_timestamps:
+        if plot_live_enabled and plot_initialized and plot_timestamps:
             ax_raw_eeg.cla()
             ax_filt_eeg.cla()
             ax_filt_eog.cla()
 
             ax_raw_eeg.set_title("Raw EEG Signals")
-            ax_filt_eeg.set_title("Filtered EEG Signals")
-            ax_filt_eog.set_title("Filtered EOG Signals")
+            ax_filt_eeg.set_title("Filtered EOG Signals")  # Corrected Title
+            ax_filt_eog.set_title(
+                "Filtered EOG Signals (Processed for Eye Movements)")
 
             ax_raw_eeg.set_ylabel("Amplitude")
-            ax_filt_eeg.set_ylabel("Amplitude")
+            ax_filt_eeg.set_ylabel("Amplitude")  # Corrected Label
             ax_filt_eog.set_ylabel("Amplitude")
             ax_filt_eog.set_xlabel("Session Time (s)")
 
-            # Define colors for channels (e.g., using Matplotlib's default color cycle)
             channel_colors = [f'C{i}' for i in range(4)]
+            channels_to_plot = [
+                plot_live_channel] if plot_live_channel is not None else range(4)
 
-            for i in range(4):
+            eog_data_for_processing = []
+            valid_eog_data_present = True
+            if len(plot_timestamps) > 0:
+                for i in range(4):
+                    if len(plot_data_filt_eog[i]) != len(plot_timestamps):
+                        valid_eog_data_present = False
+                        break
+                if valid_eog_data_present:
+                    for i in range(4):
+                        eog_data_for_processing.append(plot_data_filt_eog[i])
+
+                if not eog_data_for_processing or len(eog_data_for_processing) != 4:
+                    valid_eog_data_present = False
+            else:
+                valid_eog_data_present = False
+
+            processed_eog_plot_data = None
+            if valid_eog_data_present:
+                eog_window_np = np.array(eog_data_for_processing).T
+                if eog_window_np.shape[0] > 0:
+                    processed_eog_plot_data = process_eog_for_plotting(
+                        eog_window_np,
+                        FS,
+                        lowcut=0.5,
+                        highcut=3.0,
+                        artifact_threshold=100,
+                        # Ensure kernel is at least 3
+                        mft_kernel_size=max(3, int(FS * 0.04))
+                    )
+
+            for i in channels_to_plot:
                 if len(plot_timestamps) == len(plot_data_raw_eeg[i]):
                     ax_raw_eeg.plot(
-                        plot_timestamps, plot_data_raw_eeg[i], label=f'Ch {i+1}', color=channel_colors[i])
-                if len(plot_timestamps) == len(plot_data_filt_eeg[i]):
-                    ax_filt_eeg.plot(
-                        plot_timestamps, plot_data_filt_eeg[i], label=f'Ch {i+1}', color=channel_colors[i])
-                if len(plot_timestamps) == len(plot_data_filt_eog[i]):
-                    ax_filt_eog.plot(
-                        plot_timestamps, plot_data_filt_eog[i], label=f'Ch {i+1}', color=channel_colors[i])
+                        plot_timestamps, plot_data_raw_eeg[i], label=f'Raw EEG Ch {i+1}', color=channel_colors[i], alpha=0.7)
 
-            ax_raw_eeg.legend(loc='upper right', fontsize='small')
-            ax_filt_eeg.legend(loc='upper right', fontsize='small')
-            ax_filt_eog.legend(loc='upper right', fontsize='small')
+                if len(plot_timestamps) == len(plot_data_filt_eog[i]):
+                    ax_filt_eeg.plot(
+                        plot_timestamps, plot_data_filt_eog[i], label=f'Filt EOG Ch {i+1}', color=channel_colors[i], alpha=0.7)
+
+                plot_label_eog = f'EOG Ch {i+1}'
+                line_style_eog = '-'
+
+                if processed_eog_plot_data is not None and \
+                   processed_eog_plot_data.shape[0] == len(plot_timestamps) and \
+                   processed_eog_plot_data.shape[1] == 4:
+                    ax_filt_eog.plot(
+                        plot_timestamps, processed_eog_plot_data[:, i], label=f'{plot_label_eog} (Proc.)', color=channel_colors[i], linestyle=line_style_eog)
+                elif len(plot_timestamps) == len(plot_data_filt_eog[i]):
+                    ax_filt_eog.plot(
+                        plot_timestamps, plot_data_filt_eog[i], label=f'{plot_label_eog} (Orig.)', color=channel_colors[i], linestyle=':')
+
+            if plot_live_channel is None:
+                ax_raw_eeg.legend(loc='upper right', fontsize='small')
+                # Corrected legend for Filtered EOG
+                ax_filt_eeg.legend(loc='upper right', fontsize='small')
+                ax_filt_eog.legend(loc='upper right', fontsize='small')
+            else:
+                ch_num = plot_live_channel + 1
+                ax_raw_eeg.set_title(f"Raw EEG Signal - Channel {ch_num}")
+                # Corrected title for Filtered EOG
+                ax_filt_eeg.set_title(
+                    f"Filtered EOG Signal - Channel {ch_num}")
+                ax_filt_eog.set_title(
+                    f"Processed EOG Signal - Channel {ch_num}")
 
             if plot_timestamps:
                 current_xlim_start = plot_timestamps[0]
                 current_xlim_end = plot_timestamps[-1]
-                # Ensure start and end are different to avoid plotting error
                 if current_xlim_start >= current_xlim_end:
-                    # Default to 1s window if times are same
                     current_xlim_end = current_xlim_start + 1
 
                 ax_raw_eeg.set_xlim(current_xlim_start, current_xlim_end)
-                # ax_filt_eeg and ax_filt_eog share x-axis
 
             plt.tight_layout()
             plt.pause(0.01)
@@ -321,11 +480,11 @@ try:
                 last_metadata_save_time = current_time
                 initial_metadata_saved = True
             except Exception as e_save:
-                pass  # Silently pass for now as per "remove all print lines"
+                pass
 
 except KeyboardInterrupt:
     print("\nKeyboard interrupt detected. Finalizing...")
-    pass  # Silently pass
+    pass
 except Exception as e:
     print(f"An error occurred: {e}")
 finally:
@@ -351,7 +510,7 @@ finally:
         print(f"Error during final metadata save: {e_save_final}")
         pass
 
-    if cli_args.plot_live:
+    if plot_live_enabled:
         plt.ioff()
         plt.show()
     print(
