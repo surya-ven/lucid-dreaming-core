@@ -5,12 +5,16 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
-    "frenztoolkit>=0.2.3",
+    "fastapi>=0.115.12",
     "lightgbm>=4.6.0",
-    #   "frenztoolkit>=0.2.0", ## This does not work on Benji's machine
     "matplotlib>=3.9.4",
     "mne>=1.8.0",
     "numpy>=1.26.4",
     "pandas>=2.2.3",
     "pip>=25.1",
+    "scipy>=1.13.1",
+    "uvicorn>=0.34.2",
+    "playsound3>=3.0.0", # Changed from playsound
+    "soundfile>=0.12.1",
+    "frenztoolkit>=0.2.3",
 ]

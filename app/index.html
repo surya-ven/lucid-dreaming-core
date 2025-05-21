@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title id="pageTitle">Sleep Data Processor</title>
+        <style>
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+                    Roboto, Helvetica, Arial, sans-serif;
+                margin: 0;
+                padding: 20px;
+                background-color: #f4f7f6;
+                color: #333;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                min-height: 100vh;
+            }
+            .container {
+                background-color: #fff;
+                padding: 25px;
+                border-radius: 8px;
+                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+                width: 100%;
+                max-width: 700px;
+                text-align: center;
+            }
+            h1 {
+                color: #2c3e50;
+                margin-bottom: 20px;
+            }
+            button {
+                background-color: #3498db;
+                color: white;
+                border: none;
+                padding: 12px 20px;
+                text-align: center;
+                text-decoration: none;
+                display: inline-block;
+                font-size: 16px;
+                border-radius: 5px;
+                cursor: pointer;
+                transition: background-color 0.3s ease;
+                margin: 5px;
+            }
+            button:hover {
+                background-color: #2980b9;
+            }
+            button:disabled {
+                background-color: #bdc3c7;
+                cursor: not-allowed;
+            }
+            #stopSessionButton {
+                background-color: #e74c3c;
+            }
+            #stopSessionButton:hover {
+                background-color: #c0392b;
+            }
+            .status-box,
+            .info-box,
+            .error-box,
+            .messages-box {
+                margin-top: 20px;
+                padding: 15px;
+                border-radius: 5px;
+                text-align: left;
+            }
+            .status-box {
+                background-color: #eaf5ff;
+                border-left: 5px solid #3498db;
+            }
+            .info-box {
+                background-color: #e8f6f3;
+                border-left: 5px solid #1abc9c;
+            }
+            .error-box {
+                background-color: #fdedec;
+                border-left: 5px solid #e74c3c;
+                color: #c0392b;
+                display: none; /* Hidden by default */
+            }
+            .messages-box {
+                background-color: #fef9e7;
+                border-left: 5px solid #f1c40f;
+                display: none; /* Hidden by default */
+            }
+            .status-available {
+                color: #27ae60;
+                font-weight: bold;
+            }
+            .status-unavailable {
+                color: #e74c3c;
+                font-weight: bold;
+            }
+            .status-error {
+                color: #e74c3c;
+                font-weight: bold;
+            }
+            .spinner {
+                border: 4px solid #f3f3f3; /* Light grey */
+                border-top: 4px solid #3498db; /* Blue */
+                border-radius: 50%;
+                width: 20px;
+                height: 20px;
+                animation: spin 1s linear infinite;
+                display: none; /* Hidden by default */
+                margin-left: 10px;
+                vertical-align: middle;
+            }
+            @keyframes spin {
+                0% {
+                    transform: rotate(0deg);
+                }
+                100% {
+                    transform: rotate(360deg);
+                }
+            }
+            .instructions {
+                text-align: left;
+                margin-bottom: 20px;
+                padding: 15px;
+                background-color: #ecf0f1;
+                border-radius: 5px;
+                font-size: 0.9em;
+            }
+            .instructions ul {
+                padding-left: 20px;
+            }
+            #pastSessionsList ul {
+                list-style-type: none;
+                padding: 0;
+            }
+            #pastSessionsList li {
+                background-color: #f9f9f9;
+                border: 1px solid #eee;
+                padding: 10px;
+                margin-bottom: 8px;
+                border-radius: 4px;
+                font-size: 0.95em;
+            }
+            #pastSessionsList li strong {
+                color: #34495e;
+            }
+            .view {
+                display: none; /* All views hidden by default */
+            }
+            /* Styles for the volume slider */
+            .volume-slider-container {
+                margin-top: 15px;
+                margin-bottom: 15px;
+                padding: 10px;
+                background-color: #f9f9f9;
+                border-radius: 5px;
+                border: 1px solid #eee;
+            }
+            .volume-slider-container label {
+                display: block;
+                margin-bottom: 8px;
+                font-weight: bold;
+                color: #34495e;
+            }
+            .volume-slider-container input[type="range"] {
+                width: 80%;
+                max-width: 300px;
+                cursor: pointer;
+            }
+            .volume-slider-container span {
+                font-size: 0.9em;
+                color: #555;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1 id="mainTitle">Sleep Data Processor</h1>
+
+            <div id="frenzStatusDiv" class="status-box">
+                Checking Frenz Brainband status...
+            </div>
+            <button id="refreshFrenzStatusButton">
+                Refresh Frenzband Status
+            </button>
+            <div id="errorDisplay" class="error-box"></div>
+            <div id="generalMessages" class="messages-box"></div>
+
+            <!-- Home View -->
+            <div id="homeView" class="view">
+                <h2>Welcome</h2>
+                <p>Manage your sleep recording sessions.</p>
+
+                <!-- Volume Control Slider -->
+                <div class="volume-slider-container">
+                    <label for="volumeSlider"
+                        >Max Audio Cue Volume:
+                        <span id="volumeValueLabel">80</span>%</label
+                    >
+                    <input
+                        type="range"
+                        id="volumeSlider"
+                        min="0"
+                        max="100"
+                        value="80"
+                    />
+                    <button id="setVolumeButton">Set Max Volume</button>
+                    <p>
+                        <small
+                            >Adjust slider to hear a sample sound. Click "Set
+                            Max Volume" to save for the session.</small
+                        >
+                    </p>
+                </div>
+
+                <!-- Added this button -->
+                <div class="instructions">
+                    <strong>Frenz Brainband Connection:</strong>
+                    <ul>
+                        <li>
+                            Ensure your Frenz Brainband is adequately charged.
+                        </li>
+                        <li>Turn on the Brainband.</li>
+                        <li>
+                            Connect the Brainband to this computer via
+                            Bluetooth. Refer to your OS and Brainband manual for
+                            pairing instructions.
+                        </li>
+                        <li>
+                            Click "Refresh Frenzband Status" above. Once
+                            connected, its status should appear as "Available".
+                        </li>
+                    </ul>
+                </div>
+                <button id="startSessionButton" disabled>
+                    Start New Session
+                </button>
+                <span
+                    id="loadingSpinnerHome"
+                    class="spinner"
+                    style="display: none"
+                ></span>
+
+                <h3>Past Sessions</h3>
+                <div id="pastSessionsList" class="info-box">
+                    <p>Loading past sessions...</p>
+                </div>
+            </div>
+
+            <!-- Session View -->
+            <div id="sessionView" class="view">
+                <h2>Active Session</h2>
+                <div id="sessionStatusDiv" class="status-box">
+                    Session starting...
+                    <span
+                        id="loadingSpinner"
+                        class="spinner"
+                        style="display: inline-block"
+                    ></span>
+                </div>
+                <div id="sessionInfoDiv" class="info-box">
+                    Session details will appear here.
+                </div>
+                <button id="stopSessionButton" disabled>Stop Session</button>
+            </div>
+        </div>
+
+        <script>
+            let sessionActive = false;
+            let frenzAvailable = false;
+            let statusInterval = null;
+            let currentView = "home"; // 'home' or 'session'
+            let sessionStartTime = null;
+            // Set the safe max volume to match backend (keep in sync with MAX_SAFE_AUDIO_VOLUME in main.py)
+            const SAFE_MAX_AUDIO_VOLUME = 0.2;
+            let maxAudioVolume = SAFE_MAX_AUDIO_VOLUME; // Default, matches backend
+            let volumeSliderDebounceTimer = null;
+
+            const API_BASE_URL = "";
+
+            // DOM Elements
+            const frenzStatusDiv = document.getElementById("frenzStatusDiv");
+            const refreshFrenzStatusButton = document.getElementById(
+                "refreshFrenzStatusButton"
+            ); // Added
+            const startSessionButton =
+                document.getElementById("startSessionButton");
+            const stopSessionButton =
+                document.getElementById("stopSessionButton");
+            const sessionStatusDiv =
+                document.getElementById("sessionStatusDiv");
+            const sessionInfoDiv = document.getElementById("sessionInfoDiv");
+            const loadingSpinner = document.getElementById("loadingSpinner"); // This is for session view
+            const loadingSpinnerHome =
+                document.getElementById("loadingSpinnerHome"); // Added for home view actions
+            const errorDisplay = document.getElementById("errorDisplay");
+
+            const homeView = document.getElementById("homeView");
+            const sessionView = document.getElementById("sessionView");
+            const pastSessionsList =
+                document.getElementById("pastSessionsList");
+            const generalMessages = document.getElementById("generalMessages");
+            const volumeSlider = document.getElementById("volumeSlider");
+            const volumeValueLabel =
+                document.getElementById("volumeValueLabel");
+            const setVolumeButton = document.getElementById("setVolumeButton");
+
+            async function checkFrenzAvailability(isManualRefresh = false) {
+                if (isManualRefresh) {
+                    frenzStatusDiv.innerHTML =
+                        'Checking Frenz Brainband status... <span class="spinner" style="display:inline-block;"></span>';
+                    refreshFrenzStatusButton.disabled = true;
+                }
+                try {
+                    const response = await fetch(
+                        `${API_BASE_URL}/frenz/check_availability`
+                    );
+                    const data = await response.json();
+                    frenzAvailable = data.available; // Corrected: was data.is_available
+                    if (frenzAvailable) {
+                        frenzStatusDiv.innerHTML =
+                            'Frenz Brainband: <span class="status-available">Available</span>';
+                        if (currentView === "home")
+                            startSessionButton.disabled = false;
+                    } else {
+                        frenzStatusDiv.innerHTML =
+                            'Frenz Brainband: <span class="status-unavailable">Unavailable</span>. Please ensure it is connected and powered on.';
+                        startSessionButton.disabled = true;
+                    }
+                } catch (error) {
+                    console.error(
+                        "Error checking Frenzband availability:",
+                        error
+                    );
+                    frenzStatusDiv.innerHTML =
+                        'Frenz Brainband: <span class="status-error">Error checking status</span>';
+                    startSessionButton.disabled = true;
+                    frenzAvailable = false;
+                } finally {
+                    if (isManualRefresh) {
+                        refreshFrenzStatusButton.disabled = false;
+                    }
+                }
+            }
+
+            async function fetchSessionStatus() {
+                if (!sessionActive && currentView === "home") {
+                    return;
+                }
+                try {
+                    const response = await fetch(
+                        `${API_BASE_URL}/session/status`
+                    );
+                    const data = await response.json();
+
+                    if (currentView === "session") {
+                        sessionStatusDiv.textContent = data.status;
+                        sessionInfoDiv.innerHTML = `
+                            Session Active: ${data.session_active}<br>
+                            Data Path: ${
+                                data.current_session_path || "N/A"
+                            }<br> 
+                            Frenz Available: ${
+                                data.is_frenz_band_available ? "Yes" : "No"
+                            }
+                        `;
+                    }
+
+                    if (sessionActive && !data.session_active) {
+                        console.log(
+                            "Session ended based on status poll. Current status:",
+                            data.status
+                        );
+                        handleSessionEnd(data.status);
+                    }
+                } catch (error) {
+                    console.error("Error fetching session status:", error);
+                    if (currentView === "session") {
+                        sessionStatusDiv.textContent = "Error fetching status.";
+                    }
+                    if (sessionActive) {
+                        handleSessionEnd(
+                            "Session ended abruptly or connection to server lost."
+                        );
+                    }
+                }
+            }
+
+            async function startSession() {
+                if (!frenzAvailable) {
+                    showError(
+                        "Frenz Brainband is not available. Cannot start session."
+                    );
+                    return;
+                }
+                clearMessages();
+                showLoading(true, "Starting session...", loadingSpinnerHome); // Use home spinner
+                startSessionButton.disabled = true;
+                refreshFrenzStatusButton.disabled = true; // Disable refresh during session start attempt
+
+                try {
+                    const response = await fetch(
+                        `${API_BASE_URL}/session/start`,
+                        { method: "POST" }
+                    );
+                    const data = await response.json();
+                    showLoading(false, "", loadingSpinnerHome);
+
+                    if (response.ok) {
+                        // Check response.ok for success (status 200-299)
+                        sessionActive = true;
+                        sessionStartTime = new Date();
+                        switchToView("session");
+                        sessionStatusDiv.textContent = data.message; // "Session started."
+                        stopSessionButton.disabled = false;
+                        if (statusInterval) clearInterval(statusInterval);
+                        statusInterval = setInterval(fetchSessionStatus, 1000);
+                    } else {
+                        showError(
+                            data.detail ||
+                                data.message ||
+                                "Failed to start session."
+                        );
+                        startSessionButton.disabled = !frenzAvailable;
+                    }
+                } catch (error) {
+                    showLoading(false, "", loadingSpinnerHome);
+                    console.error("Error starting session:", error);
+                    showError("Error starting session: " + error.message);
+                    startSessionButton.disabled = !frenzAvailable;
+                } finally {
+                    refreshFrenzStatusButton.disabled =
+                        currentView === "session"; // Re-enable if still on home, disable if session started
+                }
+            }
+
+            async function stopSession() {
+                clearMessages();
+                showLoading(true, "Stopping session...", loadingSpinner); // Use session view spinner
+                stopSessionButton.disabled = true;
+
+                try {
+                    const response = await fetch(
+                        `${API_BASE_URL}/session/stop`,
+                        { method: "POST" }
+                    );
+                    const data = await response.json();
+                    showLoading(false, "", loadingSpinner);
+                    if (response.ok) {
+                        // handleSessionEnd will be called by the status poller
+                        sessionStatusDiv.textContent = data.message; // "Session stopping..."
+                    } else {
+                        showError(
+                            data.detail ||
+                                data.message ||
+                                "Failed to stop session cleanly."
+                        );
+                        stopSessionButton.disabled = false;
+                    }
+                } catch (error) {
+                    showLoading(false, "", loadingSpinner);
+                    console.error("Error stopping session:", error);
+                    showError("Error stopping session: " + error.message);
+                    stopSessionButton.disabled = false;
+                }
+            }
+
+            function handleSessionEnd(finalStatusMessage) {
+                console.log(
+                    "handleSessionEnd called with message:",
+                    finalStatusMessage
+                );
+                sessionActive = false;
+                if (statusInterval) clearInterval(statusInterval);
+                statusInterval = null;
+
+                switchToView("home");
+                showGeneralMessage(finalStatusMessage || "Session has ended.");
+
+                sessionStatusDiv.textContent = "N/A";
+                sessionInfoDiv.innerHTML = "";
+                sessionStartTime = null;
+
+                startSessionButton.disabled = !frenzAvailable;
+                stopSessionButton.disabled = true;
+                refreshFrenzStatusButton.disabled = false; // Re-enable refresh button on home screen
+
+                loadPastSessions();
+                checkFrenzAvailability(); // Check Frenz status again when returning to home
+            }
+
+            function showLoading(
+                show,
+                message = "Loading...",
+                spinnerElement = loadingSpinner
+            ) {
+                const targetSpinner = spinnerElement || loadingSpinner; // Default to session spinner if not specified
+                const targetStatusDiv =
+                    currentView === "session"
+                        ? sessionStatusDiv
+                        : generalMessages;
+
+                if (show) {
+                    targetSpinner.style.display = "inline-block";
+                    targetStatusDiv.textContent = message;
+                    if (targetStatusDiv === generalMessages)
+                        generalMessages.style.display = "block";
+                } else {
+                    targetSpinner.style.display = "none";
+                    if (targetStatusDiv.textContent === message) {
+                        // Clear only if it was the loading message
+                        targetStatusDiv.textContent = "";
+                        if (targetStatusDiv === generalMessages)
+                            generalMessages.style.display = "none";
+                    }
+                }
+            }
+
+            function showError(message) {
+                errorDisplay.textContent = message;
+                errorDisplay.style.display = "block";
+            }
+
+            function showGeneralMessage(message) {
+                generalMessages.textContent = message;
+                generalMessages.style.display = "block";
+            }
+
+            function clearMessages() {
+                errorDisplay.textContent = "";
+                errorDisplay.style.display = "none";
+                generalMessages.textContent = "";
+                generalMessages.style.display = "none";
+            }
+
+            function switchToView(viewName) {
+                currentView = viewName;
+                clearMessages();
+                if (viewName === "home") {
+                    homeView.style.display = "block";
+                    sessionView.style.display = "none";
+                    document.getElementById("mainTitle").textContent =
+                        "Sleep Data Processor"; // Changed from pageTitle
+                    loadPastSessions();
+                    startSessionButton.disabled = !frenzAvailable;
+                    stopSessionButton.disabled = true;
+                    refreshFrenzStatusButton.disabled = false;
+                } else if (viewName === "session") {
+                    homeView.style.display = "none";
+                    sessionView.style.display = "block";
+                    const startTimeString = sessionStartTime
+                        ? sessionStartTime.toLocaleString()
+                        : "Starting...";
+                    document.getElementById(
+                        "mainTitle"
+                    ).textContent = `Session Active (Started: ${startTimeString})`; // Changed from pageTitle
+                    startSessionButton.disabled = true;
+                    stopSessionButton.disabled = false;
+                    refreshFrenzStatusButton.disabled = true;
+                }
+            }
+
+            async function loadPastSessions() {
+                showLoading(
+                    true,
+                    "Loading past sessions...",
+                    loadingSpinnerHome
+                );
+                try {
+                    const response = await fetch(
+                        `${API_BASE_URL}/sessions/past`
+                    );
+                    const data = await response.json();
+                    showLoading(false, "", loadingSpinnerHome);
+                    pastSessionsList.innerHTML = "";
+
+                    if (data.sessions && data.sessions.length > 0) {
+                        const ul = document.createElement("ul");
+                        data.sessions.forEach((session) => {
+                            const li = document.createElement("li");
+                            const startTime = session.start_time_iso
+                                ? new Date(
+                                      session.start_time_iso
+                                  ).toLocaleString()
+                                : session.session_id;
+                            let statusIndicator = "";
+                            if (session.has_errors) {
+                                statusIndicator =
+                                    ' <span class="status-error">(errors logged)</span>';
+                            }
+                            li.innerHTML = `<strong>${startTime}</strong> (ID: ${session.session_id})${statusIndicator}`;
+                            ul.appendChild(li);
+                        });
+                        pastSessionsList.appendChild(ul);
+                    } else if (data.message) {
+                        pastSessionsList.innerHTML = `<p>${data.message}</p>`;
+                    } else {
+                        pastSessionsList.innerHTML =
+                            "<p>No past sessions found.</p>";
+                    }
+                } catch (error) {
+                    showLoading(false, "", loadingSpinnerHome);
+                    console.error("Error loading past sessions:", error);
+                    pastSessionsList.innerHTML =
+                        "<p>Error loading past sessions.</p>";
+                    showError("Could not load past sessions: " + error.message);
+                }
+            }
+
+
+            async function playSampleAudio(volume) {
+                // volume is 0-100 from slider, scale to 0-SAFE_MAX_AUDIO_VOLUME for API
+                const apiVolume = (parseFloat(volume) / 100) * SAFE_MAX_AUDIO_VOLUME;
+                try {
+                    const response = await fetch(
+                        `${API_BASE_URL}/audio/play_sample_cue`,
+                        {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ volume: apiVolume }),
+                        }
+                    );
+                    if (!response.ok) {
+                        const errorData = await response.json();
+                        console.error(
+                            "Error playing sample audio:",
+                            errorData.detail || "Unknown error"
+                        );
+                        // Optionally show a small, non-intrusive error to the user
+                    }
+                } catch (error) {
+                    console.error("Network error playing sample audio:", error);
+                }
+            }
+
+            async function setMaxAudioVolume(volume) {
+                // volume is 0-100 from slider, scale to 0-SAFE_MAX_AUDIO_VOLUME for API
+                const apiVolume = (parseFloat(volume) / 100) * SAFE_MAX_AUDIO_VOLUME;
+                try {
+                    setVolumeButton.disabled = true;
+                    setVolumeButton.textContent = "Setting...";
+                    const response = await fetch(
+                        `${API_BASE_URL}/audio/set_max_volume`,
+                        {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ volume: apiVolume }),
+                        }
+                    );
+                    const data = await response.json();
+                    if (response.ok) {
+                        maxAudioVolume = apiVolume; // Update local state
+                        showGeneralMessage(
+                            `Max audio volume set to ${Math.round(
+                                (apiVolume / SAFE_MAX_AUDIO_VOLUME) * 100
+                            )}% (actual: ${(apiVolume).toFixed(2)})`
+                        );
+                        console.log("Max audio volume set:", data.message);
+                    } else {
+                        showError(
+                            data.detail ||
+                                data.message ||
+                                "Failed to set max volume."
+                        );
+                    }
+                } catch (error) {
+                    console.error("Error setting max volume:", error);
+                    showError("Error setting max volume: " + error.message);
+                } finally {
+                    setVolumeButton.disabled = false;
+                    setVolumeButton.textContent = "Set Max Volume";
+                }
+            }
+
+            document.addEventListener("DOMContentLoaded", () => {
+                startSessionButton.addEventListener("click", startSession);
+                stopSessionButton.addEventListener("click", stopSession);
+                refreshFrenzStatusButton.addEventListener("click", () =>
+                    checkFrenzAvailability(true)
+                ); // Added listener
+
+                switchToView("home");
+                checkFrenzAvailability(); // Initial check on load
+                loadPastSessions();
+
+                // Volume Slider Event Listeners
+                volumeSlider.addEventListener("input", () => {
+                    const currentVolume = volumeSlider.value;
+                    volumeValueLabel.textContent = currentVolume;
+                    // Debounce playing sample audio to avoid too many requests
+                    clearTimeout(volumeSliderDebounceTimer);
+                    volumeSliderDebounceTimer = setTimeout(() => {
+                        playSampleAudio(currentVolume);
+                    }, 200); // Play after 200ms of no movement
+                });
+
+                setVolumeButton.addEventListener("click", () => {
+                    setMaxAudioVolume(volumeSlider.value);
+                });
+
+                // Set initial slider value from the default maxAudioVolume
+                volumeSlider.value = Math.round(maxAudioVolume * 100);
+                volumeValueLabel.textContent = volumeSlider.value;
+            });
+        </script>
+    </body>
+</html>
