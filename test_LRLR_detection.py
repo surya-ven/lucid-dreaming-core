@@ -5,7 +5,7 @@ import numpy as np
 import os
 from scipy.signal import butter, filtfilt, medfilt, find_peaks, welch
 from sklearn.decomposition import FastICA
-import tensorflow as tf # Added import
+
 
 import time
 
@@ -255,7 +255,7 @@ def plot_exg_channels(data, colnames=None, target_event=None, ylim=None):
 
 
 # --- Plotting the last 4 channels (EOG OR EEG) ---
-def plot_eeg_eog_data(loaded_data, session_metadata, colstart=0, colend=4, target_event=None, title="All Channels"):
+def plot_eeg_eog_data(loaded_data, session_metadata, colstart=1, colend=4, target_event=None, title="All Channels"):
     if loaded_data is not None and loaded_data.shape[0] > 0 and loaded_data.shape[1] >= colend:
         num_samples = loaded_data.shape[0]
         time_vector = np.arange(num_samples)  # Timestep of 1/100th of a second
@@ -267,11 +267,11 @@ def plot_eeg_eog_data(loaded_data, session_metadata, colstart=0, colend=4, targe
         column_names = session_metadata.get('column_names', [f'Ch{i+1}' for i in range(loaded_data.shape[1])])
         plot_column_names = column_names[-4:]
 
-        fig, axes = plt.subplots(4, 1, figsize=(15, 10), sharex=True)
+        fig, axes = plt.subplots(colend, 1, figsize=(15, 10), sharex=True)
         if data_to_plot.shape[1] == 1: # Handle case if there's only 1 column to plot (though we expect 4)
             axes = [axes] 
 
-        for i in range(0,4):
+        for i in range(0,colend):
             ax = axes[i]
             ax.plot(time_vector, data_to_plot[:, i])
             if target_event is not None:
@@ -279,7 +279,7 @@ def plot_eeg_eog_data(loaded_data, session_metadata, colstart=0, colend=4, targe
                                 linewidth=4,alpha=1, where=(target_event == 1), label="Target Event (filled)")
 
 
-            ax.set_title(f"Plot of: {plot_column_names[i]}")
+            ax.set_title(f"Plot of: {plot_column_names[i]}") if i != 2 else ax.set_title(f"Plot of: Horz. Difference")
             ax.set_ylabel("Value")
             # ax.set_ylim([-ylim, ylim])
             ax.grid(True)
@@ -335,7 +335,7 @@ def plot_single_channel_data(data, srate, LRLR=None):
         time_vector = np.arange(num_samples) / srate  # Timestep of 1/100th of a second
 
         plt.figure(figsize=(15, 5))
-        plt.plot(time_vector, data)
+        plt.plot(time_vector, data, 'k', lw=1.5, label='H-Eye')
         plt.title(f"Plot of channel & window")
         if LRLR is not None:
             plt.suptitle(f"LRLR Pattern: {LRLR}", fontsize=10)
@@ -742,6 +742,39 @@ def filter_signal_data(data, srate, mft=5, lowcut=0.5, highcut=15, artifact_thre
     return data
 
 
+def SURYA_process_eog_for_plotting(data, srate, lowcut=0.2, highcut=5.0,
+                             artifact_threshold=150, mft_kernel_size=5):
+    if data.ndim == 1:
+        data = data[:, np.newaxis]
+    if data.shape[0] < 15:
+        return data
+
+    for ch in range(data.shape[1]):
+        cd = data[:, ch]
+        artifacts = np.abs(cd) > artifact_threshold
+        if artifacts.any():
+            idx = np.where(artifacts)[0]
+            splits = np.where(np.diff(idx) > 1)[0] + 1
+            segs = np.split(idx, splits)
+            for seg in segs:
+                if len(seg) == 0:
+                    continue
+                start, end = seg[0], seg[-1]
+                pre = cd[start-1] if start > 0 else cd[end +
+                                                       1] if end+1 < len(cd) else 0
+                post = cd[end+1] if end + \
+                    1 < len(cd) else cd[start-1] if start > 0 else 0
+                data[seg, ch] = np.linspace(pre, post, len(seg))
+
+    k = mft_kernel_size + (1 - mft_kernel_size % 2)
+    try:
+        data = medfilt(data, kernel_size=(k, 1))
+    except ValueError:
+        pass
+
+    b, a = butter(4, [lowcut, highcut], btype='band', fs=srate)
+    data = filtfilt(b, a, data, axis=0)
+    return data
 
 # Helper function for preprocessing, adapted from lstm_data_extraction.py
 def _preprocess_input_for_lstm(data_segment_raw, model_srate_for_filter=118, mft=5, lowcut=0.5, highcut=15, artifact_threshold=125):
@@ -866,7 +899,7 @@ def main2():
 # # --- Example of filtering and processing and LRLR checking the loaded data ---
 def main():
 
-    for filepath in rec_data_names[4:11]:
+    for filepath in rec_data_names[6:11]:
         SESSION_FOLDER_PATH = f"recorded_data/{filepath}"
 
 
@@ -882,11 +915,11 @@ def main():
 
 
         ## -- TESTING ALGS -- ##
-
         # LRLR detection & time
         print(f"\nDetecting LRLR patterns in the last 750 instances of EOG data...")
         start_time = time.time()
         test, count = detect_lrlr_window_from_lstm(eog_data, srate)
+        
         end_time = time.time()
         execution_time = end_time - start_time # Execution time: 0.0018 seconds; 1.8 ms/milliseconds
 
@@ -909,7 +942,7 @@ def main():
 
 def test1():
     # <<< PLEASE UPDATE THIS PATH >>> ## TO COPY LRLR_1_time_1 ALERTNESS_3minmark_1
-    for filepath in rec_data_names[4:11]:
+    for filepath in rec_data_names[5:9]:
         SESSION_FOLDER_PATH = f"recorded_data/{filepath}"
 
 
@@ -920,25 +953,35 @@ def test1():
             return
 
         ## Filtering and processing
-        eog_data = loaded_data[:2000,-4:]
+        eog_data = loaded_data[:,-4:]
         display_loaded_data_and_metadata(loaded_data, session_metadata)
         # data = np.concatenate((eeg_data[:,0:2], eog_data[:,0:2]), axis=1)
         # print(f"shape of data: {data.shape}")
         # plot_exg_channels(data, target_event=loaded_data[:2000, 1])
 
+        new_horiz = np.array([eog_data[:,0], eog_data[:,2],eog_data[:,0] - eog_data[:,2]]).T
+        print(f"shape of new_horiz: {new_horiz.shape}")
+        # print(new_horiz)
 
-        plot_eeg_eog_data(eog_data, session_metadata, title="pre filter", target_event=loaded_data[:2000, 1])
-        plt.show()
+
+        clean = SURYA_process_eog_for_plotting(np.array(new_horiz), srate=125)
+        plot_eeg_eog_data(clean, session_metadata, colstart=0, colend=3, target_event=loaded_data[:, 1])
+
+        # plot_single_channel_data(clean, srate=125)
 
         
-        eog_filt_data = filter_signal_data(eog_data, srate=118, mft=7, lowcut=0.2, highcut=3, artifact_threshold=75)
+        # plot_eeg_eog_data(eog_data, session_metadata, title="pre filter", target_event=loaded_data[:2000, 1])
+        # plt.show()
 
-        plot_eeg_eog_data(eog_filt_data, session_metadata, title="post filter", target_event=loaded_data[:2000, 1])
+        
+        # eog_filt_data = filter_signal_data(eog_data, srate=118, mft=7, lowcut=0.2, highcut=3, artifact_threshold=75)
+
+        # plot_eeg_eog_data(eog_filt_data, session_metadata, title="post filter", target_event=loaded_data[:2000, 1])
         # pdf_filename = f"{filepath}_postprocessing_plot.pdf"
         # plt.savefig(pdf_filename, format='pdf', bbox_inches='tight')
         plt.show()
 
 
 if __name__ == "__main__":
-    main()
+    test1()
 
