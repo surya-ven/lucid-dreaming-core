@@ -6,11 +6,12 @@ import time
 import numpy as np
 import os
 import pandas as pd
-import joblib
+# import joblib
 from mne.preprocessing import read_ica
 from datetime import datetime
-from alertness_detection import compute_alertness_score, calculate_ML_based_alertness_score, save_alertness_score
-from test_LRLR_detection import detect_lrlr_window_from_lstm, LSTM_SAMPLE_LENGTH
+# from alertness_detection import compute_alertness_score, calculate_ML_based_alertness_score, save_alertness_score
+# from test_LRLR_detection import detect_lrlr_window_from_lstm, LSTM_SAMPLE_LENGTH
+import tensorflow as tf
 
 # For plotting
 import matplotlib.pyplot as plt
@@ -106,7 +107,7 @@ session_info = {
 }
 
 ica_model = read_ica("models/ica_artifact_cleaning.fif")
-lgb_model = joblib.load("models/alertness_lgbm_light.pkl")
+# lgb_model = joblib.load("models/alertness_lgbm_light.pkl")
 
 data_file_handle = None
 last_metadata_save_time = time.time()
@@ -187,20 +188,20 @@ try:
                 new_eog_data = filtered_eog_buffer[:,
                                                    samples_written_count:current_total_samples_in_buffer]
 
-                if (current_time - last_LRLR_compute_time) >= 1.0:
-                    if (filtered_eog_buffer.shape[1] > LSTM_SAMPLE_LENGTH):
-                        # Detect LRLR in the new EOG data
-                        lrlr_result = detect_lrlr_window_from_lstm(
-                            filtered_eog_buffer.T, srate=118, detection_threshold=0.51)
-                        if lrlr_result is not None:
-                            test, count = lrlr_result
-                            # For plotting: mark LRLR event (binary or count)
-                            if cli_args.plot_live:
-                                lrlr_plot_times.append(
-                                    session_duration_seconds)
-                                lrlr_plot_values.append(1 if test else 0)
+                # if (current_time - last_LRLR_compute_time) >= 1.0:
+                #     if (filtered_eog_buffer.shape[1] > LSTM_SAMPLE_LENGTH):
+                #         # Detect LRLR in the new EOG data
+                #         lrlr_result = detect_lrlr_window_from_lstm(
+                #             filtered_eog_buffer.T, srate=118, detection_threshold=0.51)
+                #         if lrlr_result is not None:
+                #             test, count = lrlr_result
+                #             # For plotting: mark LRLR event (binary or count)
+                #             if cli_args.plot_live:
+                #                 lrlr_plot_times.append(
+                #                     session_duration_seconds)
+                #                 lrlr_plot_values.append(1 if test else 0)
 
-                        last_LRLR_compute_time = current_time
+                #         last_LRLR_compute_time = current_time
             else:
                 new_eog_data = np.full(
                     (4, num_new_samples), np.nan, dtype=EEG_DATA_TYPE)
@@ -212,30 +213,30 @@ try:
                 new_raw_eeg_data = raw_eeg_buffer[-num_new_samples:,
                                                   [0, 1, 3, 4]].T
 
-                # Detect alertness using the latest raw EEG data
-                raw_eeg_data = raw_eeg_buffer[:, [0, 1, 3, 4]].T
-                if (current_time - last_alertness_compute_time) >= 1.0:
-                    if (raw_eeg_buffer.shape[0] > 500):
-                        # make sure data is in shape of (4, N)
-                        latest_alertness_score = calculate_ML_based_alertness_score(
-                            raw_eeg_data, ica_model, lgb_model)
+                # # Detect alertness using the latest raw EEG data
+                # raw_eeg_data = raw_eeg_buffer[:, [0, 1, 3, 4]].T
+                # if (current_time - last_alertness_compute_time) >= 1.0:
+                #     if (raw_eeg_buffer.shape[0] > 500):
+                #         # make sure data is in shape of (4, N)
+                #         latest_alertness_score = calculate_ML_based_alertness_score(
+                #             raw_eeg_data, ica_model, lgb_model)
 
-                        save_alertness_score(
-                            alertness_log_df, latest_alertness_score)
+                #         save_alertness_score(
+                #             alertness_log_df, latest_alertness_score)
 
-                        smoothed_score = alertness_log_df["AlertnessScore_EMA"].iloc[-1]
-                        print(
-                            f"Raw Latest alertness score: {latest_alertness_score:.2f}")
-                        print(
-                            f"Smoothed (EMA) alertness score: {smoothed_score:.2f}")
+                #         smoothed_score = alertness_log_df["AlertnessScore_EMA"].iloc[-1]
+                #         print(
+                #             f"Raw Latest alertness score: {latest_alertness_score:.2f}")
+                #         print(
+                #             f"Smoothed (EMA) alertness score: {smoothed_score:.2f}")
 
-                        # For plotting: append time and score
-                        if cli_args.plot_live:
-                            alertness_plot_times.append(
-                                session_duration_seconds)
-                            alertness_plot_scores.append(smoothed_score)
+                #         # For plotting: append time and score
+                #         if cli_args.plot_live:
+                #             alertness_plot_times.append(
+                #                 session_duration_seconds)
+                #             alertness_plot_scores.append(smoothed_score)
 
-                        last_alertness_compute_time = current_time
+                #         last_alertness_compute_time = current_time
             else:
                 new_raw_eeg_data = np.full(
                     (4, num_new_samples), np.nan, dtype=EEG_DATA_TYPE)

@@ -9,6 +9,8 @@ from sklearn.decomposition import FastICA
 
 import time
 
+import csv
+import traceback
 
 LRLR_LSTM_MODEL = None
 DEFAULT_LSTM_MODEL_PATH = 'lrlr_lstm_model.keras'
@@ -940,6 +942,225 @@ def main():
         # # Plot the channels
         # plot_eeg_eog_data(eog_data, session_metadata, colstart=0, colend=4)
 
+
+# --- Added for evaluation ---
+DEFAULT_WINDOW_SECONDS = 5.0 # Window duration for threshold-based detection
+
+def write_results_to_csv(filepath, results):
+    """Helper function to write evaluation results to a CSV file."""
+    # results is a list of dicts: {'data_id': str, 'true_label': int, 'predicted_label': int, 'predicted_score': float}
+    with open(filepath, 'w', newline='') as csvfile:
+        fieldnames = ['data_id', 'true_label', 'predicted_label', 'predicted_score']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in results:
+            writer.writerow(row)
+
+def run_evaluation_scenarios():
+    """Runs the 7 LRLR detection evaluation scenarios and saves results to CSV files."""
+    base_recording_path = "recorded_data/"
+
+    test_configurations = [
+        {"name": "threshold_filter", "method": "threshold", "filters": [], "hdiff": False, "closed_only": False, "bandpass": None, "detection_params": {"threshold": 2}},
+        {"name": "threshold_filter_ensemble", "method": "threshold", "filters": [], "hdiff": False, "closed_only": False, "bandpass": None, "detection_params": {"threshold": 1}},
+        {"name": "threshold_filter_remove_artifacts_ensemble", "method": "threshold", "filters": ["remove_artifacts"], "hdiff": False, "closed_only": False, "bandpass": None, "detection_params": {"threshold": 1}},
+        {"name": "LSTM_filter_remove_artifacts_ensemble", "method": "lstm", "filters": ["remove_artifacts"], "hdiff": False, "closed_only": False, "bandpass": None, "detection_params": {"detection_threshold": 0.5}},
+        {"name": "threshold_filter_remove_artifacts_hdiff", "method": "threshold", "filters": ["remove_artifacts"], "hdiff": True, "closed_only": False, "bandpass": (0.2, 4.0), "detection_params": {"threshold": 1}},
+        {"name": "LSTM_filter_remove_artifacts_hdiff", "method": "lstm", "filters": ["remove_artifacts"], "hdiff": True, "closed_only": False, "bandpass": (0.2, 4.0), "detection_params": {"detection_threshold": 0.5}},
+        {"name": "threshold_filter_remove_artifacts_hdiff_closed", "method": "threshold", "filters": ["remove_artifacts"], "hdiff": True, "closed_only": True, "bandpass": (0.2, 4.0), "detection_params": {"threshold": 1}},
+    ]
+
+    for config_idx, config in enumerate(test_configurations):
+        all_results_for_config = []
+        print(f"\\nRunning test {config_idx+1}/{len(test_configurations)}: {config['name']}")
+
+        for rec_name in rec_data_names:
+            if config["closed_only"] and "closed" not in rec_name:
+                continue
+
+            session_folder_path = os.path.join(base_recording_path, rec_name)
+            if not os.path.isdir(session_folder_path):
+                print(f"  Warning: Session folder not found {session_folder_path}, skipping.")
+                continue
+
+            # print(f"  Processing recording: {rec_name}")
+            loaded_data, session_metadata = load_custom_data(session_folder_path)
+
+            if loaded_data is None or loaded_data.size == 0 or session_metadata is None:
+                print(f"  Failed to load data or data is empty for {rec_name}, skipping.")
+                continue
+
+            srate = session_metadata.get('sampling_rate', session_metadata.get('srate', session_metadata.get('fs', None)))
+            if srate is None:
+                print(f"  Error: Sampling rate not found in metadata for {rec_name}. Skipping.")
+                continue
+            srate = float(srate)
+
+
+            all_column_names = list(session_metadata.get('processed_column_names', []))
+            if not all_column_names:
+                print(f"  Error: 'processed_column_names' not found in metadata for {rec_name}. Skipping.")
+                continue
+
+            target_event_col_idx = -1
+            if 'TargetEvent' in all_column_names:
+                target_event_col_idx = all_column_names.index('TargetEvent')
+            else:
+                print(f"  Warning: 'TargetEvent' column not found for {rec_name}. Cannot evaluate this file. Skipping.")
+                continue
+            
+            true_labels_full = loaded_data[:, target_event_col_idx]
+            
+            eog_data_candidate = loaded_data
+            cols_to_delete_indices = [target_event_col_idx]
+            
+            if 'Timestamps' in all_column_names:
+                ts_col_idx = all_column_names.index('Timestamps')
+                if ts_col_idx not in cols_to_delete_indices:
+                    cols_to_delete_indices.append(ts_col_idx)
+            
+            cols_to_delete_indices.sort(reverse=True)
+            current_eog_column_names = list(all_column_names)
+
+            for col_idx in cols_to_delete_indices:
+                eog_data_candidate = np.delete(eog_data_candidate, col_idx, axis=1)
+                current_eog_column_names.pop(col_idx)
+
+            if eog_data_candidate.shape[1] == 0:
+                print(f"  No EOG data channels remain after removing metadata columns for {rec_name}. Skipping.")
+                continue
+
+            current_eog_input = eog_data_candidate
+
+            if config["hdiff"]:
+                left_ch_idx, right_ch_idx = -1, -1
+                possible_left_names = ['eog_l', 'lheog', 'fp1', 'eogleft', 'eog1', 'lefteog']
+                possible_right_names = ['eog_r', 'rheog', 'fp2', 'eogright', 'eog2', 'righteog']
+
+                for idx, name in enumerate(current_eog_column_names):
+                    lname = name.lower().replace(" ", "").replace("_","")
+                    if left_ch_idx == -1 and any(pname in lname for pname in possible_left_names):
+                        left_ch_idx = idx
+                    if right_ch_idx == -1 and any(pname in lname for pname in possible_right_names):
+                        right_ch_idx = idx
+                
+                if left_ch_idx != -1 and right_ch_idx != -1 and left_ch_idx != right_ch_idx:
+                    # print(f"    Using HDIFF: {current_eog_column_names[left_ch_idx]} - {current_eog_column_names[right_ch_idx]}")
+                    hdiff_signal = eog_data_candidate[:, left_ch_idx] - eog_data_candidate[:, right_ch_idx]
+                    current_eog_input = hdiff_signal.reshape(-1, 1)
+                elif eog_data_candidate.shape[1] >= 2:
+                    print(f"    Warning: Specific L/R EOG channels for HDIFF not found by name for {rec_name}. Using first two EOG channels: {current_eog_column_names[0]} - {current_eog_column_names[1]}.")
+                    hdiff_signal = eog_data_candidate[:, 0] - eog_data_candidate[:, 1]
+                    current_eog_input = hdiff_signal.reshape(-1, 1)
+                else:
+                    print(f"    Not enough EOG channels ({eog_data_candidate.shape[1]}) for HDIFF for {rec_name}, skipping this file for this hdiff config.")
+                    continue
+            
+            eog_data_processed = current_eog_input.copy() # Start with current EOG input (multi-channel or hdiff)
+
+            if "remove_artifacts" in config["filters"]:
+                lowcut, highcut = (0.5, 15.0) # Defaults for filter_signal_data
+                if config["bandpass"]:
+                    lowcut, highcut = config["bandpass"]
+                # print(f"    Applying filter_signal_data with lowcut={lowcut}, highcut={highcut}")
+                eog_data_processed = filter_signal_data(
+                    eog_data_processed, srate,
+                    lowcut=lowcut, highcut=highcut
+                    # mft, artifact_threshold, apply_ica use defaults from filter_signal_data
+                )
+                if eog_data_processed is None or eog_data_processed.size == 0 :
+                    print(f"    Filtering resulted in empty or None data for {rec_name}, skipping.")
+                    continue
+                # Ensure eog_data_processed is 2D
+                if eog_data_processed.ndim == 1:
+                    eog_data_processed = eog_data_processed.reshape(-1, 1)
+
+
+            window_samples = 0
+            if config["method"] == "lstm":
+                window_samples = LSTM_SAMPLE_LENGTH
+            else: # threshold method
+                window_samples = int(DEFAULT_WINDOW_SECONDS * srate)
+            
+            if window_samples <= 0 or eog_data_processed.shape[0] < window_samples :
+                # print(f"    Not enough data points ({eog_data_processed.shape[0]}) for window size {window_samples} in {rec_name}. Skipping.")
+                continue
+            
+            stride_samples = window_samples # Non-overlapping windows
+
+            for k in range(0, eog_data_processed.shape[0] - window_samples + 1, stride_samples):
+                window_eog = eog_data_processed[k : k + window_samples]
+                window_true_labels_segment = true_labels_full[k : k + window_samples]
+                
+                true_label_for_window = 1 if np.any(window_true_labels_segment == 1) else 0
+                predicted_label = 0
+                predicted_score = 0.0
+
+                if config["method"] == "lstm":
+                    # Ensure window_eog has the correct shape if LSTM expects multi-channel even after hdiff
+                    # detect_lrlr_window_from_lstm might need specific channel configuration.
+                    # Assuming it handles single channel (hdiff) or multi-channel input appropriately.
+                    is_detected_lstm = detect_lrlr_window_from_lstm(
+                        window_eog, srate,
+                        model_path=DEFAULT_LSTM_MODEL_PATH,
+                        detection_threshold=config["detection_params"]["detection_threshold"]
+                    )
+                    predicted_label = 1 if is_detected_lstm else 0
+                    predicted_score = float(predicted_label) 
+                else: # threshold method
+                    window_duration_sec = window_eog.shape[0] / srate
+                    is_detected_thresh = detect_lrlr_in_window(
+                        window_eog, srate,
+                        seconds=window_duration_sec,
+                        threshold=config["detection_params"]["threshold"]
+                    )
+                    predicted_label = 1 if is_detected_thresh else 0
+                    predicted_score = float(predicted_label)
+
+                data_id_str = f"{rec_name}_window_{k // stride_samples}"
+                all_results_for_config.append({
+                    "data_id": data_id_str,
+                    "true_label": true_label_for_window,
+                    "predicted_label": predicted_label,
+                    "predicted_score": predicted_score
+                })
+        
+        if not all_results_for_config:
+            print(f"  No results generated for configuration: {config['name']}. CSV will be empty or not created.")
+        
+        csv_filename = f"results_{config['name']}.csv"
+        write_results_to_csv(csv_filename, all_results_for_config)
+        print(f"  Results for {config['name']} written to {csv_filename} ({len(all_results_for_config)} rows)")
+
+    print("\\nAll evaluation scenarios completed.")
+
+
+def testmydat():
+    
+    SESSION_FOLDER_PATH = f"recorded_data/20250523_151032_849861"
+    SESSION_FOLDER_PATH = f"recorded_data/{rec_data_names[5]}"
+
+    loaded_data, session_metadata = load_custom_data(SESSION_FOLDER_PATH)
+
+
+
+    eog_data = loaded_data[:,-4:]
+    display_loaded_data_and_metadata(loaded_data, session_metadata)
+
+    # Show summary statistics
+    # unique_values, counts = np.unique(loaded_data[:,1], return_counts=True)
+    # print("\nSummary:")
+    # for val, count in zip(unique_values, counts):
+    #     print(f"Value {int(val)}: {count} occurrences ({count/len(loaded_data[:,1])*100:.1f}%)")
+
+
+    new_horiz = np.array([eog_data[:,0], eog_data[:,2],eog_data[:,0] - eog_data[:,2]]).T
+    clean = SURYA_process_eog_for_plotting(np.array(new_horiz), srate=125)
+    plot_eeg_eog_data(clean, session_metadata, colstart=0, colend=3, target_event=loaded_data[:, 1])
+    plt.show()
+
+
+    
 def test1():
     # <<< PLEASE UPDATE THIS PATH >>> ## TO COPY LRLR_1_time_1 ALERTNESS_3minmark_1
     for filepath in rec_data_names[5:9]:
@@ -964,12 +1185,12 @@ def test1():
         # print(new_horiz)
 
 
+
         clean = SURYA_process_eog_for_plotting(np.array(new_horiz), srate=125)
         plot_eeg_eog_data(clean, session_metadata, colstart=0, colend=3, target_event=loaded_data[:, 1])
 
         # plot_single_channel_data(clean, srate=125)
 
-        
         # plot_eeg_eog_data(eog_data, session_metadata, title="pre filter", target_event=loaded_data[:2000, 1])
         # plt.show()
 
@@ -983,5 +1204,5 @@ def test1():
 
 
 if __name__ == "__main__":
-    test1()
+    testmydat()
 
