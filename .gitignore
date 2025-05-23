@@ -10,4 +10,5 @@ wheels/
 .venv
 recorded_data
 
+.DS_Store
 v2/
