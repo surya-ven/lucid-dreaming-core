@@ -17,4 +17,6 @@ dependencies = [
     "playsound3>=3.0.0", # Changed from playsound
     "soundfile>=0.12.1",
     "frenztoolkit>=0.2.3",
+    "imblearn>=0.0",
+    "xgboost>=2.1.4",
 ]

@@ -3,9 +3,11 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import os
-from scipy.signal import butter, filtfilt, medfilt, find_peaks, welch
+from scipy.signal import butter, filtfilt, medfilt, find_peaks, welch, hilbert, resample # Added hilbert, resample
 from sklearn.decomposition import FastICA
 import tensorflow as tf # Add this import
+from scipy.stats import skew, kurtosis # Added skew, kurtosis
+import joblib # Added joblib
 
 import time
 import csv
@@ -15,10 +17,21 @@ import traceback
 LRLR_LSTM_MODEL = None
 DEFAULT_LSTM_MODEL_PATH = 'lrlr_lstm_model.keras'
 LSTM_SAMPLE_LENGTH = 750
+
+LRLR_CONV1D_MODEL = None
+DEFAULT_CONV1D_MODEL_PATH = 'lrlr_conv1d_model_fold__final_all_data.keras'
+CONV1D_SAMPLE_LENGTH = LSTM_SAMPLE_LENGTH # Trained on same data shape as LSTM
+
+FINAL_LSTM_MODEL_PATH = 'lrlr_lstm_model_fold__final_all_data.keras' # New model path
+
+LRLR_SVM_MODEL = None
+LRLR_SVM_SCALER = None
+DEFAULT_SVM_MODEL_PATH = 'lrlr_svm_model.pkl'
+
 DEFAULT_SRATE = 125.0     # recordings were all made at 125 Hz
 
 
-rec_data_names = [
+rec_data_names_old = [
     "v2_LRLR_once_1_mix",
     "v2_LRLR_once_2_mix",
     "v2_LRLR_once_3_mix",
@@ -34,6 +47,26 @@ rec_data_names = [
     "v2_LRLR_once_13_mix_rapid",
     "v2_LRLR_once_14_mix_rapid",
     "v2_LRLR_once_15_mix_rapid",
+]
+
+rec_data_names = [
+    "20250523_183954_966852", #LRLR ? 
+    "20250523_192852_995272", #LRLR x1
+    "20250523_193034_228556", #LRLR x4
+    "20250523_193526_401634", #LRLR x4
+    "20250523_194915_602917", #LRLR x4
+    "20250523_200210_295876", #LRLR x4
+    "20250524_015512_029025", #LRLR x9
+    "20250524_020422_208890", #LRLR x12
+    "20250524_022100_630075", #LRLR x12
+    "20250524_033027_138563", #LRLR x9
+    "20250524_033637_296315", #LRLR x7
+
+    "v2_LRLR_once_6_closed",
+    "v2_LRLR_once_7_closed",
+    "v2_LRLR_once_8_closed",
+    "v2_LRLR_once_9_closed",
+    "v2_LRLR_once_10_closed",
 ]
 
 ylim = 500
@@ -468,6 +501,133 @@ def _preprocess_input_for_lstm(data_segment_raw, model_srate_for_filter=118, mft
     return normalized_data
 
 
+def detect_lrlr_window_from_conv1d(eog_data_segment, srate, model_path=DEFAULT_CONV1D_MODEL_PATH, detection_threshold=0.5, conv1d_lowcut=0.5, conv1d_highcut=15):
+    """
+    Detects LRLR patterns using the trained Conv1D model on a given EOG data segment.
+
+    Args:
+        eog_data_segment (np.ndarray): EOG data array segment, must be (CONV1D_SAMPLE_LENGTH, 2).
+        srate (float): Sampling rate of the input eog_data. (Note: model_srate_for_filter in preprocess is fixed)
+        model_path (str): Path to the Keras Conv1D model file.
+        detection_threshold (float): Threshold for classifying a prediction as LRLR.
+        conv1d_lowcut (float): Lowcut for Conv1D's internal bandpass filter.
+        conv1d_highcut (float): Highcut for Conv1D's internal bandpass filter.
+
+    Returns:
+        tuple: (bool, float) -> (is_lrlr_detected, prediction_value) or None if error.
+    """
+    global LRLR_CONV1D_MODEL
+    if LRLR_CONV1D_MODEL is None:
+        try:
+            from tensorflow.keras.models import load_model # type: ignore
+            LRLR_CONV1D_MODEL = load_model(model_path)
+            print(f"Conv1D Model loaded from {model_path}")
+        except Exception as e:
+            print(f"Error loading Conv1D model from {model_path}: {e}")
+            # traceback.print_exc()
+            return None
+
+    if eog_data_segment.shape[0] != CONV1D_SAMPLE_LENGTH:
+        print(f"Error: EOG data segment length is incorrect for Conv1D ({eog_data_segment.shape[0]} samples, need {CONV1D_SAMPLE_LENGTH}).")
+        return None
+    
+    if eog_data_segment.shape[1] != 2:
+        print(f"Error: EOG data segment has incorrect channels ({eog_data_segment.shape[1]}). Conv1D requires 2.")
+        return None
+
+    # Preprocess the segment using the provided lowcut and highcut
+    # model_srate_for_filter=118 matches the data characteristics Conv1D was trained on (from lstm_data_extraction)
+    preprocessed_segment = _preprocess_input_for_lstm(
+        eog_data_segment,
+        model_srate_for_filter=118, 
+        lowcut=conv1d_lowcut,
+        highcut=conv1d_highcut
+    )
+
+    model_input = np.expand_dims(preprocessed_segment, axis=0)
+
+    try:
+        prediction_value = LRLR_CONV1D_MODEL.predict(model_input, verbose=0)[0][0]
+        is_lrlr = prediction_value > detection_threshold # Use detection_threshold
+        return is_lrlr, float(prediction_value)
+    except Exception as e:
+        print(f"Error during Conv1D prediction: {e}")
+        # traceback.print_exc()
+        return None
+
+
+def detect_lrlr_window_from_svm(eog_data_segment, srate, model_path=DEFAULT_SVM_MODEL_PATH, detection_threshold=0.5):
+    """
+    Detects LRLR patterns using the trained SVM model on a given EOG data segment.
+
+    Args:
+        eog_data_segment (np.ndarray): EOG data array segment, e.g., (N, 2).
+        srate (float): Sampling rate of the input eog_data. (Used for potential resampling if features require specific fs)
+        model_path (str): Path to the .pkl file containing the SVM model and scaler.
+        detection_threshold (float): Threshold for classifying a probability prediction as LRLR.
+
+    Returns:
+        tuple: (bool, float) -> (is_lrlr_detected, prediction_score) or None if error.
+    """
+    global LRLR_SVM_MODEL, LRLR_SVM_SCALER
+    if LRLR_SVM_MODEL is None or LRLR_SVM_SCALER is None:
+        try:
+            model_data = joblib.load(model_path)
+            LRLR_SVM_MODEL = model_data['model']
+            LRLR_SVM_SCALER = model_data['scaler']
+            print(f"SVM Model and Scaler loaded from {model_path}")
+        except Exception as e:
+            print(f"Error loading SVM model/scaler from {model_path}: {e}")
+            # traceback.print_exc()
+            return None
+
+    # Normalize the input segment (similar to how training data for SVM was prepared)
+    # The data going into lstm_training_data.npz (which SVM trains on) is normalized.
+    mean = np.mean(eog_data_segment, axis=0)
+    std = np.std(eog_data_segment, axis=0)
+    normalized_segment = (eog_data_segment - mean) / (std + 1e-8) # Add epsilon to prevent div by zero
+
+    # Reshape for feature extraction: (1, timesteps, channels)
+    X_for_features = np.expand_dims(normalized_segment, axis=0)
+
+    # Extract features using the copied function
+    # extract_robust_features uses fs=118 internally for some calculations.
+    # The input `normalized_segment` is at original `srate`.
+    # This matches the apparent inconsistency in the training pipeline where
+    # data from 125Hz recordings was used with features extracted assuming 118Hz.
+    try:
+        features = extract_robust_features(X_for_features)
+    except Exception as e:
+        print(f"Error during SVM feature extraction: {e}")
+        # traceback.print_exc()
+        return None
+    
+    if np.any(np.isnan(features)) or np.any(np.isinf(features)):
+        print("Warning: NaN/Inf in extracted SVM features. Replacing with 0.")
+        features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+    # Scale features
+    try:
+        scaled_features = LRLR_SVM_SCALER.transform(features)
+    except Exception as e:
+        print(f"Error scaling SVM features: {e}")
+        # traceback.print_exc()
+        return None
+        
+    # Predict
+    try:
+        # predict_proba returns [[prob_class_0, prob_class_1]]
+        prediction_proba = LRLR_SVM_MODEL.predict_proba(scaled_features)
+        prediction_score = prediction_proba[0][1] # Probability of LRLR class (class 1)
+        is_lrlr = prediction_score > detection_threshold
+        return is_lrlr, float(prediction_score)
+    except Exception as e:
+        print(f"Error during SVM prediction: {e}")
+        # traceback.print_exc()
+        return None
+
+
 def detect_lrlr_window_from_lstm(eog_data_segment, srate, model_path=DEFAULT_LSTM_MODEL_PATH, detection_threshold=0.5, lstm_lowcut=0.5, lstm_highcut=15):
     """
     Detects LRLR patterns using the trained LSTM model on a given EOG data segment.
@@ -541,11 +701,18 @@ def run_single_test_configuration(config, rec_data_names_list, base_output_dir):
     config_name = config['name']
     algo_type = config['algo_type']
     filter_func_name = config['filter_function_name'] # Name to select function
-    use_ensemble = config['is_ensemble'] # For threshold, affects interpretation. For LSTM, implies 2 EOG.
+    use_ensemble = config['is_ensemble'] # For threshold, affects interpretation. For LSTM/Conv1D, implies 2 EOG if not hdiff.
     use_hdiff = config['is_hdiff']
     dataset_keyword_filter = config['dataset_keyword_filter']
     bandpass_params = config['bandpass'] # (lowcut, highcut) for primary filter
-    lstm_bandpass_params = config.get('lstm_bandpass', bandpass_params) # Specific for LSTM internal, defaults to primary
+    
+    # Algorithm-specific parameters
+    lstm_bandpass_params = config.get('lstm_bandpass', bandpass_params) 
+    conv1d_bandpass_params = config.get('conv1d_bandpass', bandpass_params)
+    conv1d_model_path = config.get('model_path', DEFAULT_CONV1D_MODEL_PATH) # Default for conv1d
+    lstm_model_path = config.get('model_path', DEFAULT_LSTM_MODEL_PATH) # Default for lstm
+
+
     csv_filename = config['csv_name']
 
     results_for_csv = []
@@ -641,6 +808,36 @@ def run_single_test_configuration(config, rec_data_names_list, base_output_dir):
                 else:
                     print(f"Skipping {rec_name} for {config_name} (LSTM): needs at least 2 channels post-filter for non-hdiff.")
                     continue
+        elif algo_type == 'conv1d': # Conv1D also expects 2 channels
+            if use_hdiff:
+                if filtered_eog_for_windowing.shape[1] == 1: # hdiff result is 1 channel
+                    eog_for_detection_func = np.column_stack((filtered_eog_for_windowing.flatten(), filtered_eog_for_windowing.flatten()))
+                else:
+                    print(f"Skipping {rec_name} for {config_name} (Conv1D hdiff): filtered hdiff data not 1 channel.")
+                    continue
+            else: # Standard Conv1D: use first 2 channels
+                if filtered_eog_for_windowing.shape[1] >= 2:
+                    eog_for_detection_func = filtered_eog_for_windowing[:, :2]
+                else:
+                    print(f"Skipping {rec_name} for {config_name} (Conv1D): needs at least 2 channels post-filter for non-hdiff.")
+                    continue
+        elif algo_type == 'svm': # SVM also expects 2 channels for feature extraction
+            if use_hdiff:
+                if filtered_eog_for_windowing.shape[1] == 1: # hdiff result is 1 channel
+                    eog_for_detection_func = np.column_stack((filtered_eog_for_windowing.flatten(), filtered_eog_for_windowing.flatten()))
+                else:
+                    print(f"Skipping {rec_name} for {config_name} (SVM hdiff): filtered hdiff data not 1 channel.")
+                    continue
+            else: # Standard SVM: use first 2 channels
+                if filtered_eog_for_windowing.shape[1] >= 2:
+                    eog_for_detection_func = filtered_eog_for_windowing[:, :2]
+                else: # If only 1 channel available and not hdiff, duplicate it to make 2 for SVM feature extractor
+                    if filtered_eog_for_windowing.shape[1] == 1:
+                         print(f"Warning for {rec_name} (SVM non-hdiff): Only 1 EOG channel found after primary filter. Duplicating it for SVM's 2-channel feature extraction.")
+                         eog_for_detection_func = np.column_stack((filtered_eog_for_windowing.flatten(), filtered_eog_for_windowing.flatten()))
+                    else:
+                        print(f"Skipping {rec_name} for {config_name} (SVM): needs at least 1 channel post-filter for non-hdiff to duplicate to 2.")
+                        continue
         elif algo_type == 'threshold':
             # Threshold uses all channels passed to it (either original filtered, or single hdiff filtered)
             eog_for_detection_func = filtered_eog_for_windowing
@@ -653,6 +850,12 @@ def run_single_test_configuration(config, rec_data_names_list, base_output_dir):
         if algo_type == 'lstm':
             window_len = LSTM_SAMPLE_LENGTH            # must stay 750 for the model
             step_size  = window_len // 2               # 50 % overlap
+        elif algo_type == 'conv1d':
+            window_len = CONV1D_SAMPLE_LENGTH          # Trained on same length as LSTM
+            step_size  = window_len // 2               # 50 % overlap
+        elif algo_type == 'svm':
+            window_len = CONV1D_SAMPLE_LENGTH          # SVM features extracted from same segment length
+            step_size  = window_len // 2               # 50 % overlap
         else:   # threshold family – size in seconds → samples
             window_len = int(THRESH_WINDOW_SEC * srate)
             window_len = max(window_len,     int(1.0 * srate))   # never < 1 s
@@ -687,12 +890,48 @@ def run_single_test_configuration(config, rec_data_names_list, base_output_dir):
 
             elif algo_type == 'lstm':
                 lstm_bp_low, lstm_bp_high = lstm_bandpass_params
-                result_tuple = detect_lrlr_window_from_lstm(window_eog_segment, srate, lstm_lowcut=lstm_bp_low, lstm_highcut=lstm_bp_high)
+                result_tuple = detect_lrlr_window_from_lstm(
+                    window_eog_segment, srate, 
+                    model_path=lstm_model_path, # Use model_path from config
+                    lstm_lowcut=lstm_bp_low, 
+                    lstm_highcut=lstm_bp_high
+                )
                 if result_tuple:
                     pred_label_bool, pred_score_float = result_tuple
                 else: 
                     pred_label_bool, pred_score_float = False, 0.0 
             
+            elif algo_type == 'conv1d':
+                conv1d_bp_low, conv1d_bp_high = conv1d_bandpass_params
+                result_tuple = detect_lrlr_window_from_conv1d(
+                    window_eog_segment, srate,
+                    model_path=conv1d_model_path, # Use specific model_path from config
+                    conv1d_lowcut=conv1d_bp_low,
+                    conv1d_highcut=conv1d_bp_high
+                    # detection_threshold can be added here if made configurable per test,
+                    # otherwise it uses the default from detect_lrlr_window_from_conv1d signature
+                )
+                if result_tuple:
+                    pred_label_bool, pred_score_float = result_tuple
+                else:
+                    pred_label_bool, pred_score_float = False, 0.0
+            
+            elif algo_type == 'svm':
+                # SVM detection does not use specific bandpass params in its call here,
+                # as primary filtering is already done. Normalization and feature extraction are internal.
+                # `srate` is passed for context, though feature extraction uses fs=118.
+                svm_model_path_cfg = config.get('model_path', DEFAULT_SVM_MODEL_PATH)
+                result_tuple = detect_lrlr_window_from_svm(
+                    window_eog_segment, 
+                    srate, # Pass original srate for context
+                    model_path=svm_model_path_cfg
+                )
+                if result_tuple:
+                    pred_label_bool, pred_score_float = result_tuple
+                else:
+                    pred_label_bool, pred_score_float = False, 0.0
+
+
             results_for_csv.append({
                 'dataset_name': rec_name,
                 'window_start_sample': start,
@@ -724,6 +963,18 @@ def run_all_lrlr_tests():
     default_highcut = 15
     hdiff_bp_lowcut = 0.2
     hdiff_bp_highcut = 4
+    
+    # Bandpass parameters for Conv1D internal preprocessing, matching its training data
+    conv1d_internal_lowcut = 0.5
+    conv1d_internal_highcut = 15
+
+
+    # LSTM internal preprocessing bandpass parameters (can be same as default or hdiff specific)
+    lstm_internal_default_lowcut = default_lowcut
+    lstm_internal_default_highcut = default_highcut
+    lstm_internal_hdiff_lowcut = hdiff_bp_lowcut
+    lstm_internal_hdiff_highcut = hdiff_bp_highcut
+
 
     configurations = [
         {
@@ -748,7 +999,8 @@ def run_all_lrlr_tests():
             'name': 'LSTM_filter_remove_artifacts_ensemble', 'algo_type': 'lstm',
             'filter_function_name': 'filter_signal_data_and_remove_artifacts', 'is_ensemble': True, 'is_hdiff': False, # is_ensemble for LSTM implies using 2 EOG channels, not hdiff.
             'dataset_keyword_filter': None, 'bandpass': (default_lowcut, default_highcut), # Primary filter for the data before LSTM
-            'lstm_bandpass': (default_lowcut, default_highcut), # Bandpass for LSTM's internal preprocessing
+            'lstm_bandpass': (lstm_internal_default_lowcut, lstm_internal_default_highcut), # Bandpass for LSTM's internal preprocessing
+            'model_path': DEFAULT_LSTM_MODEL_PATH, # Specify LSTM model path
             'csv_name': 'results_LSTM_filter_remove_artifacts_ensemble.csv'
         },
         {
@@ -761,7 +1013,8 @@ def run_all_lrlr_tests():
             'name': 'LSTM_filter_remove_artifacts_hdiff', 'algo_type': 'lstm',
             'filter_function_name': 'filter_signal_data_and_remove_artifacts', 'is_ensemble': False, 'is_hdiff': True,
             'dataset_keyword_filter': None, 'bandpass': (hdiff_bp_lowcut, hdiff_bp_highcut), # Primary filter for the hdiff data
-            'lstm_bandpass': (hdiff_bp_lowcut, hdiff_bp_highcut), # Bandpass for LSTM's internal preprocessing on hdiff
+            'lstm_bandpass': (lstm_internal_hdiff_lowcut, lstm_internal_hdiff_highcut), # Bandpass for LSTM's internal preprocessing on hdiff
+            'model_path': DEFAULT_LSTM_MODEL_PATH, # Specify LSTM model path
             'csv_name': 'results_LSTM_filter_remove_artifacts_hdiff.csv'
         },
         {
@@ -769,8 +1022,73 @@ def run_all_lrlr_tests():
             'filter_function_name': 'filter_signal_data_and_remove_artifacts', 'is_ensemble': False, 'is_hdiff': True,
             'dataset_keyword_filter': 'closed', 'bandpass': (hdiff_bp_lowcut, hdiff_bp_highcut),
             'csv_name': 'results_threshold_filter_remove_artifacts_hdiff_closed.csv'
+        },
+        # --- New Conv1D Configurations ---
+        {
+            'name': 'Conv1D_filter_remove_artifacts_ensemble', 'algo_type': 'conv1d',
+            'filter_function_name': 'filter_signal_data_and_remove_artifacts', 
+            'is_ensemble': True, 'is_hdiff': False, # is_ensemble for Conv1D implies 2 EOG if not hdiff
+            'dataset_keyword_filter': None, 
+            'bandpass': (default_lowcut, default_highcut), # Primary filter
+            'conv1d_bandpass': (conv1d_internal_lowcut, conv1d_internal_highcut), # Internal Conv1D preprocessing filter
+            'model_path': DEFAULT_CONV1D_MODEL_PATH,
+            'csv_name': 'results_Conv1D_filter_remove_artifacts_ensemble.csv'
+        },
+        {
+            'name': 'Conv1D_filter_remove_artifacts_hdiff', 'algo_type': 'conv1d',
+            'filter_function_name': 'filter_signal_data_and_remove_artifacts', 
+            'is_ensemble': False, 'is_hdiff': True, # hdiff processing
+            'dataset_keyword_filter': None, 
+            'bandpass': (hdiff_bp_lowcut, hdiff_bp_highcut), # Primary filter for hdiff signal
+            'conv1d_bandpass': (conv1d_internal_lowcut, conv1d_internal_highcut), # Internal Conv1D preprocessing on (duplicated) hdiff
+            'model_path': DEFAULT_CONV1D_MODEL_PATH,
+            'csv_name': 'results_Conv1D_filter_remove_artifacts_hdiff.csv'
+        },
+        # --- New LSTM (final_all_data model) Configurations ---
+        {
+            'name': 'LSTM_final_model_ensemble', 'algo_type': 'lstm',
+            'filter_function_name': 'filter_signal_data_and_remove_artifacts', 
+            'is_ensemble': True, 'is_hdiff': False,
+            'dataset_keyword_filter': None, 
+            'bandpass': (default_lowcut, default_highcut), # Primary filter
+            'lstm_bandpass': (lstm_internal_default_lowcut, lstm_internal_default_highcut), # Internal LSTM preprocessing
+            'model_path': FINAL_LSTM_MODEL_PATH,
+            'csv_name': 'results_LSTM_final_model_ensemble.csv'
+        },
+        {
+            'name': 'LSTM_final_model_hdiff', 'algo_type': 'lstm',
+            'filter_function_name': 'filter_signal_data_and_remove_artifacts', 
+            'is_ensemble': False, 'is_hdiff': True,
+            'dataset_keyword_filter': None, 
+            'bandpass': (hdiff_bp_lowcut, hdiff_bp_highcut), # Primary filter for hdiff
+            'lstm_bandpass': (lstm_internal_hdiff_lowcut, lstm_internal_hdiff_highcut), # Internal LSTM preprocessing for hdiff
+            'model_path': FINAL_LSTM_MODEL_PATH,
+            'csv_name': 'results_LSTM_final_model_hdiff.csv'
         }
     ]
+
+    # --- Add SVM Configurations ---
+    configurations.extend([
+        {
+            'name': 'SVM_ensemble', 'algo_type': 'svm',
+            'filter_function_name': 'filter_signal_data_and_remove_artifacts', 
+            'is_ensemble': True, 'is_hdiff': False, 
+            'dataset_keyword_filter': None, 
+            'bandpass': (default_lowcut, default_highcut), # Primary filter
+            'model_path': DEFAULT_SVM_MODEL_PATH,
+            'csv_name': 'results_SVM_ensemble.csv'
+        },
+        {
+            'name': 'SVM_hdiff', 'algo_type': 'svm',
+            'filter_function_name': 'filter_signal_data_and_remove_artifacts', 
+            'is_ensemble': False, 'is_hdiff': True, 
+            'dataset_keyword_filter': None, 
+            'bandpass': (hdiff_bp_lowcut, hdiff_bp_highcut), # Primary filter for hdiff signal
+            'model_path': DEFAULT_SVM_MODEL_PATH,
+            'csv_name': 'results_SVM_hdiff.csv'
+        }
+    ])
+
 
     global rec_data_names
     if not rec_data_names:

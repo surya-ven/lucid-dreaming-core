@@ -9,22 +9,67 @@ import time
 
 
 rec_data_names = [
-    "v2_LRLR_once_1_mix",
-    "v2_LRLR_once_2_mix",
-    "v2_LRLR_once_3_mix",
-    "v2_LRLR_once_4_mix",
-    "v2_LRLR_once_5_mix",
+    "20250523_183954_966852", #LRLR ? 
+    "20250523_192852_995272", #LRLR x1
+    "20250523_193034_228556", #LRLR x4
+    "20250523_193526_401634", #LRLR x4
+    "20250523_194915_602917", #LRLR x4
+    "20250523_200210_295876", #LRLR x4
+    "20250524_015512_029025", #LRLR x9
+    "20250524_020422_208890", #LRLR x12
+    "20250524_022100_630075", #LRLR x12
+    "20250524_033027_138563", #LRLR x9
+    "20250524_033637_296315", #LRLR x7
+
     "v2_LRLR_once_6_closed",
     "v2_LRLR_once_7_closed",
     "v2_LRLR_once_8_closed",
     "v2_LRLR_once_9_closed",
     "v2_LRLR_once_10_closed",
-    "v2_LRLR_once_11_mix_rapid",
-    "v2_LRLR_once_12_closed_rapid",
-    "v2_LRLR_once_13_mix_rapid",
-    "v2_LRLR_once_14_mix_rapid",
-    "v2_LRLR_once_15_mix_rapid",
 ]
+
+
+# # --- Display loaded data and metadata ---
+def display_loaded_data_and_metadata(loaded_data, session_metadata):
+    if session_metadata is not None: 
+        print("\nSession Information (from metadata):")
+        for key, value in session_metadata.items():
+            if key != 'processed_column_names': # Don't print this internal-use key here
+                print(f"  {key}: {value}")
+
+        if loaded_data is not None:
+            print("\nSuccessfully loaded data.")
+            display_column_names = session_metadata.get('processed_column_names', 
+                                                    [f'Col{i+1}' for i in range(loaded_data.shape[1])])
+            print(f"Data shape (samples, columns): {loaded_data.shape}")
+            print(f"Columns: {display_column_names}")
+            
+            if loaded_data.shape[0] > 0: 
+                print("\nFirst 5 rows of loaded data:")
+                header = " | ".join(display_column_names)
+                print(header)
+                print("-" * len(header))
+                for row in loaded_data[:5, :]:
+                    # Format each element in the row for display
+                    formatted_row = []
+                    for i, item in enumerate(row):
+                        col_name = display_column_names[i] if i < len(display_column_names) else ""
+                        if col_name == "Timestamp":
+                            formatted_row.append(f"{item:.2f}") # Timestamp with 2 decimal places
+                        elif isinstance(item, bool) or col_name == "TargetEvent":
+                            formatted_row.append(str(item))    # Boolean as True/False
+                        elif isinstance(item, float) or isinstance(item, np.floating):
+                            formatted_row.append(f"{item:.3f}" if not np.isnan(item) else "NaN") # Floats with 3 decimal places
+                        else:
+                            formatted_row.append(str(item))
+                    print(" | ".join(formatted_row))
+            else:
+                print("\nData loaded, but no samples to display (data shape is 0 rows).")
+        else: 
+            print(f"\nFailed to load data array from SESSION_FOLDER_PATH, but metadata was available.")
+            print("Please check data file integrity and error messages above.")
+    else: 
+        print(f"\nFailed to load any data or metadata from SESSION_FOLDER_PATH.")
 
 
 def filter_signal_data(data, srate = 118, mft=5, lowcut=0.5, highcut=15, artifact_threshold=125):
@@ -216,6 +261,7 @@ def create_lstm_data():
         SESSION_FOLDER_PATH = f"recorded_data/{filepath_short}"
         print(f"Processing: {SESSION_FOLDER_PATH}")
         loaded_data, session_info = load_custom_data(SESSION_FOLDER_PATH)
+        loaded_data = loaded_data[:,:10]
 
         if loaded_data is None or loaded_data.shape[0] < SAMPLE_LENGTH:
             print(f"  Failed to load data or data too short for {filepath_short} (shape: {loaded_data.shape if loaded_data is not None else 'None'}). Skipping.")
@@ -277,7 +323,22 @@ def create_lstm_data():
                 else:
                     print(f"  Skipping LRLR event at {start}-{end} in {filepath_short} due to windowing issues after centering (final window {sample_start_idx}-{sample_end_idx}).")
             elif event_len > SAMPLE_LENGTH:
-                print(f"  Skipping LRLR event at {start}-{end} in {filepath_short} because it's longer ({event_len}) than {SAMPLE_LENGTH} samples.")
+                # Event is longer than SAMPLE_LENGTH. Take a sample of SAMPLE_LENGTH from the start of the event.
+                sample_start_idx = start  # Set the index at the beginning of the LRLR event
+                sample_end_idx = start + SAMPLE_LENGTH # Go to +SAMPLE_LENGTH ticks
+
+                if sample_end_idx <= len(eog_raw_data): # Check if this window is valid
+                    sample_data = eog_raw_data[sample_start_idx:sample_end_idx, :]
+                    filtered_sample = filter_signal_data(sample_data, srate=srate)
+                    
+                    mean = np.mean(filtered_sample, axis=0)
+                    std = np.std(filtered_sample, axis=0)
+                    normalized_sample = (filtered_sample - mean) / (std + 1e-8)
+                    
+                    all_samples_list.append(normalized_sample)
+                    all_labels_list.append(1)
+                else:
+                    print(f"  Skipping LRLR event at {start}-{end} in {filepath_short}. Event is longer ({event_len}) than {SAMPLE_LENGTH}, but taking {SAMPLE_LENGTH} samples from event start ({start}) would exceed data length ({len(eog_raw_data)}). Proposed end: {sample_end_idx}.")
 
         # Extract non-LRLR samples
         non_lrlr_stride = SAMPLE_LENGTH // 2 
@@ -311,6 +372,26 @@ def create_lstm_data():
     output_filename = 'lstm_training_data.npz'
     np.savez(output_filename, X=X, y=y)
     print(f"Saved data to {output_filename}")
+
+
+def misc_test():
+    for filepath_short in rec_data_names[5:8]:
+        SESSION_FOLDER_PATH = f"recorded_data/{filepath_short}"
+        print(f"Processing: {SESSION_FOLDER_PATH}")
+        loaded_data, session_info = load_custom_data(SESSION_FOLDER_PATH)
+
+        loaded_data = loaded_data[:,:10]
+
+        display_loaded_data_and_metadata(loaded_data, session_info)
+
+        print(f"Loaded data shape: {loaded_data[:,:10].shape}")
+        print(f"Loaded data shape: {loaded_data.shape}")
+
+        # if loaded_data is None:
+        #     print(f"  Failed to load data for {filepath_short}. Skipping.")
+        #     continue
+
+        srate = 118
 
 
 if __name__ == '__main__':

@@ -357,3 +357,4 @@ finally:
         plt.show()
     print(
         f"Custom streaming session ended. Data saved in: {session_data_path}")
+    print(f"With timestamp: {session_timestamp_str}")

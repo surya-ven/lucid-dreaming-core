@@ -3,8 +3,9 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import os
-from scipy.signal import butter, filtfilt, medfilt, find_peaks, welch
+from scipy.signal import butter, filtfilt, medfilt, find_peaks, welch, savgol_filter, firwin
 from sklearn.decomposition import FastICA
+import tensorflow as tf
 
 
 import time
@@ -38,6 +39,20 @@ rec_data_names = [
     "v2_R_once_18_mix",
     "v2_REM_once_19_closed",
     "v2_REM_once_20_closed"
+]
+
+other_rec_data_names = [
+    "20250523_183954_966852", #LRLR ? 
+    "20250523_192852_995272", #LRLR x1
+    "20250523_193034_228556", #LRLR x4
+    "20250523_193526_401634", #LRLR x4
+    "20250523_194915_602917", #LRLR x4
+    "20250523_200210_295876", #LRLR x4
+    "20250524_015512_029025", #LRLR x9
+    "20250524_020422_208890", #LRLR x12
+    "20250524_022100_630075", #LRLR x12
+    "20250524_033027_138563", #LRLR x9
+    "20250524_033637_296315", #LRLR x7
 ]
 
 ylim = 500
@@ -262,18 +277,17 @@ def plot_eeg_eog_data(loaded_data, session_metadata, colstart=1, colend=4, targe
         num_samples = loaded_data.shape[0]
         time_vector = np.arange(num_samples)  # Timestep of 1/100th of a second
 
-        # Select the last 4 columns
+
         data_to_plot = loaded_data[:, colstart:colend]
-
-        # Get column names for the last 4 columns, if available
         column_names = session_metadata.get('column_names', [f'Ch{i+1}' for i in range(loaded_data.shape[1])])
-        plot_column_names = column_names[-4:]
+        column_names = column_names
+        print(column_names)
 
-        fig, axes = plt.subplots(colend, 1, figsize=(15, 10), sharex=True)
-        if data_to_plot.shape[1] == 1: # Handle case if there's only 1 column to plot (though we expect 4)
+        fig, axes = plt.subplots(colend-colstart, 1, figsize=(15, 10), sharex=True)
+        if data_to_plot.shape[1] == 1: 
             axes = [axes] 
 
-        for i in range(0,colend):
+        for i in range(0,colend-colstart):
             ax = axes[i]
             ax.plot(time_vector, data_to_plot[:, i])
             if target_event is not None:
@@ -281,7 +295,7 @@ def plot_eeg_eog_data(loaded_data, session_metadata, colstart=1, colend=4, targe
                                 linewidth=4,alpha=1, where=(target_event == 1), label="Target Event (filled)")
 
 
-            ax.set_title(f"Plot of: {plot_column_names[i]}") if i != 2 else ax.set_title(f"Plot of: Horz. Difference")
+            ax.set_title(f"Plot of: {column_names[i]}") #if i != 2 else ax.set_title(f"Plot of: Horz. Difference")
             ax.set_ylabel("Value")
             # ax.set_ylim([-ylim, ylim])
             ax.grid(True)
@@ -744,8 +758,41 @@ def filter_signal_data(data, srate, mft=5, lowcut=0.5, highcut=15, artifact_thre
     return data
 
 
-def SURYA_process_eog_for_plotting(data, srate, lowcut=0.2, highcut=5.0,
-                             artifact_threshold=150, mft_kernel_size=5):
+def ATTEMPT_TO_FIX_BOXES_process_eog_for_plotting(data, srate, low=0.5, high=4.0,
+                                     clip=500, sg_win=11, sg_ord=3):
+
+    # ---- 0) shape + float ----
+    data = np.atleast_2d(data).T if data.ndim == 1 else data.copy()
+    data = data.astype(float)
+
+    # ---- 1) mark clips as NaN ----
+    clip_mask = np.abs(data) > clip
+    data[clip_mask] = np.nan
+
+    # ---- 2) fill NaNs ONCE (linear) ----
+    for ch in range(data.shape[1]):
+        bad = np.isnan(data[:, ch])
+        if bad.any():
+            good = ~bad
+            if good.sum() == 0:                 # full‑channel clip
+                data[:, ch] = 0.0               # flat‑fill (or leave NaN)
+            else:
+                data[bad, ch] = np.interp(np.flatnonzero(bad),
+                                          np.flatnonzero(good),data[good, ch])
+
+    # ---- 3) Savitzky–Golay (safe: no NaNs left) ----
+    data = savgol_filter(data, sg_win, sg_ord, axis=0, mode='interp')
+
+    # ---- 4) FIR band‑pass 0.5‑4 Hz ----
+    hp = firwin(801, low,  fs=srate, pass_zero=False)
+    lp = firwin(801, high, fs=srate)
+    bp = np.convolve(hp, lp, mode='full')
+    data = filtfilt(bp, [1.0], data, axis=0)
+
+    return data
+
+def CURRENT_process_eog_for_plotting(data, srate, lowcut=0.5, highcut=4.0,
+                             artifact_threshold=1000, mft_kernel_size=5):
     if data.ndim == 1:
         data = data[:, np.newaxis]
     if data.shape[0] < 15:
@@ -822,15 +869,15 @@ def detect_lrlr_window_from_lstm(eog_data, srate, model_path=DEFAULT_LSTM_MODEL_
             print(f"LSTM model '{model_path}' loaded successfully.")
         except Exception as e:
             print(f"Error loading LSTM model from '{model_path}': {e}")
-            return False # Cannot proceed without the model
+            return False, 0.0 # Cannot proceed without the model
 
     if eog_data.shape[0] < LSTM_SAMPLE_LENGTH:
         print(f"Warning: EOG data too short for LSTM ({eog_data.shape[0]} samples, need {LSTM_SAMPLE_LENGTH}).")
-        return False
+        return False, 0.0
     
     if eog_data.shape[1] < 2:
         print(f"Warning: EOG data has fewer than 2 channels ({eog_data.shape[1]}). LSTM requires 2.")
-        return False
+        return False, 0.0
 
     # Extract the last LSTM_SAMPLE_LENGTH samples from the first two channels
     # Assumes eog_data's first two columns are the ones the LSTM was trained on.
@@ -1100,22 +1147,23 @@ def run_evaluation_scenarios():
                     # Ensure window_eog has the correct shape if LSTM expects multi-channel even after hdiff
                     # detect_lrlr_window_from_lstm might need specific channel configuration.
                     # Assuming it handles single channel (hdiff) or multi-channel input appropriately.
-                    is_detected_lstm = detect_lrlr_window_from_lstm(
+                    is_detected_lstm, prediction_score_lstm = detect_lrlr_window_from_lstm(
                         window_eog, srate,
                         model_path=DEFAULT_LSTM_MODEL_PATH,
                         detection_threshold=config["detection_params"]["detection_threshold"]
                     )
                     predicted_label = 1 if is_detected_lstm else 0
-                    predicted_score = float(predicted_label) 
+                    predicted_score = float(prediction_score_lstm) 
                 else: # threshold method
                     window_duration_sec = window_eog.shape[0] / srate
-                    is_detected_thresh = detect_lrlr_in_window(
+                    is_detected_thresh, count_thresh = detect_lrlr_in_window( # Ensure detect_lrlr_in_window also returns two values
                         window_eog, srate,
                         seconds=window_duration_sec,
                         threshold=config["detection_params"]["threshold"]
                     )
                     predicted_label = 1 if is_detected_thresh else 0
-                    predicted_score = float(predicted_label)
+                    # Use count_thresh or a simple binary score if count is not directly a probability/score
+                    predicted_score = float(count_thresh) # Or float(predicted_label) if count is not a score
 
                 data_id_str = f"{rec_name}_window_{k // stride_samples}"
                 all_results_for_config.append({
@@ -1136,16 +1184,18 @@ def run_evaluation_scenarios():
 
 
 def testmydat():
-    
-    SESSION_FOLDER_PATH = f"recorded_data/20250523_151032_849861"
-    SESSION_FOLDER_PATH = f"recorded_data/{rec_data_names[5]}"
+    SESSION_FOLDER_PATH = f"recorded_data/20250524_033637_296315"
+    # SESSION_FOLDER_PATH = f"recorded_data/{rec_data_names[5]}"
 
     loaded_data, session_metadata = load_custom_data(SESSION_FOLDER_PATH)
-
-
-
-    eog_data = loaded_data[:,-4:]
     display_loaded_data_and_metadata(loaded_data, session_metadata)
+
+    i,j = 0,99999
+    eog_data = loaded_data[i:j,6:10]
+    print(f"shape of eog_data: {eog_data.shape}")
+    print(f"column names: {session_metadata['processed_column_names'][6:10]}")
+    print(f"column names: {session_metadata['processed_column_names']}")
+
 
     # Show summary statistics
     # unique_values, counts = np.unique(loaded_data[:,1], return_counts=True)
@@ -1154,9 +1204,18 @@ def testmydat():
     #     print(f"Value {int(val)}: {count} occurrences ({count/len(loaded_data[:,1])*100:.1f}%)")
 
 
-    new_horiz = np.array([eog_data[:,0], eog_data[:,2],eog_data[:,0] - eog_data[:,2]]).T
-    clean = SURYA_process_eog_for_plotting(np.array(new_horiz), srate=125)
-    plot_eeg_eog_data(clean, session_metadata, colstart=0, colend=3, target_event=loaded_data[:, 1])
+    new_horiz = np.array([eog_data[:,0], eog_data[:,2]]).T
+    clean = CURRENT_process_eog_for_plotting(np.array(new_horiz), srate=125)
+    diff_channel = clean[:,0] - clean[:,1]
+    clean = np.column_stack((clean, diff_channel))
+
+    print(f"shape of new_horiz: {new_horiz.shape}")
+    print(f"shape of clean: {clean.shape}")
+
+    plot_eeg_eog_data(clean, session_metadata, colstart=0, colend=3, target_event=loaded_data[i:j, 1])
+    # clld=SURYA_process_eog_for_plotting(np.array(loaded_data), srate=125)
+    # plot_eeg_eog_data(clld, session_metadata, colstart=2, colend=14, target_event=loaded_data[i:j, 1])
+
     plt.show()
 
 
@@ -1186,7 +1245,7 @@ def test1():
 
 
 
-        clean = SURYA_process_eog_for_plotting(np.array(new_horiz), srate=125)
+        clean = CURRENT_process_eog_for_plotting(np.array(new_horiz), srate=118)
         plot_eeg_eog_data(clean, session_metadata, colstart=0, colend=3, target_event=loaded_data[:, 1])
 
         # plot_single_channel_data(clean, srate=125)
@@ -1205,4 +1264,5 @@ def test1():
 
 if __name__ == "__main__":
     testmydat()
+
 

@@ -25,7 +25,6 @@ RIGHT_EOG_CH = 2  # Outer-canthus right
 
 parser = argparse.ArgumentParser(
     description="FrenzToolkit Eye Movement Streamer")
-parser.add_argument("--log-events", action="store_true")
 parser.add_argument("--plot-live", nargs='?', const=True, default=False)
 cli_args = parser.parse_args()
 
