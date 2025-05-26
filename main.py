@@ -259,6 +259,8 @@ if __name__ == "__main__":
                         f"Raw Latest alertness score: {raw_alertness_score:.2f}")
                     print(
                         f"Smoothed (EMA) alertness score: {ema_alertness_score:.2f}")
+                    print(
+                        f"Is under alert threshold: {is_not_alert}")
 
 
             posture = streamer.SCORES.get("posture")
