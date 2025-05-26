@@ -15,6 +15,6 @@ v2/
 
 sample_data
 
-.pkl
-.keras
-.h5
+*.pkl
+*.keras
+*.h5
