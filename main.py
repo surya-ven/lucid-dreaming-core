@@ -3,7 +3,9 @@ import time
 import numpy as np
 from scipy import signal
 from sklearn.decomposition import FastICA
-from alertness_detection import compute_alertness_score
+from alertness_detection import compute_alertness_score, calculate_DL_based_alertness_score
+from test_custom_save import last_alertness_compute_time
+
 # import matplotlib.pyplot as plt # Uncomment for debugging plots
 
 PRODUCT_KEY = "RUtYA4W3kpXi0i9C7VZCQJY5_GRhm4XL2rKp6cviwQI="
@@ -28,6 +30,8 @@ ICA_RANDOM_STATE = 42
 # Indices of the 4 relevant EEG channels from the 6 columns provided by the SDK
 # (assuming columns 2 and 5 are the zero-padded ones as per your description)
 EEG_COLUMN_INDICES = [0, 1, 3, 4]
+
+last_alertness_compute_time = 0
 
 
 # --- Preprocessing Functions (expect data as [num_channels, num_samples]) ---
@@ -157,6 +161,7 @@ if __name__ == "__main__":
         print("Streamer started successfully.")
 
         while True:
+            current_time = time.time()
             if streamer.session_dur > 10*60:  # Run for 10 minutes
                 print("Desired session duration reached.")
                 break
@@ -243,10 +248,18 @@ if __name__ == "__main__":
 
             # detecting alertness using filtered eeg data
             # data source could be replaced further
-            latest_alertness_score = compute_alertness_score(processed_eeg[:, :4].transpose(), sfreq=FS)
-            print(
-                f"Latest alertness score: {latest_alertness_score:.2f}"
-            )
+
+            if (current_time - last_alertness_compute_time) >= 5.0:
+                if selected_eeg_data_cols.shape[0] > 125 * 30:
+                    last_alertness_compute_time = current_time
+                    raw_alertness_score, ema_alertness_score, is_not_alert \
+                        = calculate_DL_based_alertness_score(selected_eeg_data_cols.transpose())
+
+                    print(
+                        f"Raw Latest alertness score: {raw_alertness_score:.2f}")
+                    print(
+                        f"Smoothed (EMA) alertness score: {ema_alertness_score:.2f}")
+
 
             posture = streamer.SCORES.get("posture")
             poas = streamer.SCORES.get("poas")
