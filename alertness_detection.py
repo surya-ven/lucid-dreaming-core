@@ -39,9 +39,9 @@ def preprocess_alertness_data(data):
     return raw
 
 def calculate_DL_based_alertness_score(data):
-    segment = data[:, -segment_length * sfreq :]
+    segment = data[:, -segment_length * sfreq:]
 
-    segment = preprocess_alertness_data(segment)
+    segment = preprocess_alertness_data(segment).get_data()
 
     return predict_alertness_from_segment(segment)
 
