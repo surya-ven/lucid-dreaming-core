@@ -43,8 +43,7 @@ def calculate_DL_based_alertness_score(data):
 
     segment = preprocess_alertness_data(segment)
 
-    alertness_score = predict_alertness_from_segment(segment)
-    return alertness_score
+    return predict_alertness_from_segment(segment)
 
 
 def predict_alertness_from_segment(data):
