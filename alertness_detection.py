@@ -130,7 +130,7 @@ def predict_alertness_from_segment(data):
     timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     alertness = df_feat['alert_pred'].iloc[-1]
 
-    df_alert.loc[len(df_alert)] = [timestamp_str, alertness]
+    df_alert.loc[len(df_alert)] = {"timestamp": timestamp_str, "alertness_raw": alertness}
 
     df_alert["alertness_ema"] = df_alert["alertness_raw"].ewm(span=20, adjust=False).mean()
 
