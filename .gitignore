@@ -9,6 +9,7 @@ wheels/
 # Virtual environments
 .venv
 recorded_data
+simulation_output
 
 .DS_Store
 v2/
