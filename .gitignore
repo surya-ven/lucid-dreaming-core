@@ -14,3 +14,6 @@ recorded_data
 v2/
 
 sample_data
+recorded_data/
+extracted_REM_windows.npz
+provided_data/
