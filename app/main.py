@@ -1,26 +1,25 @@
 # Conceptual structure for FastAPI app (main.py)
+import asyncio
+import time
+import os
+import sys
+import io
+import traceback
+import argparse
+import numpy as np
+from scipy.signal import butter, filtfilt, medfilt, detrend
+
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.concurrency import run_in_threadpool
 from contextlib import asynccontextmanager
 from datetime import datetime
 from frenztoolkit import Streamer, Scanner
-import numpy as np
-import os
-import time
-import asyncio
-from scipy.signal import butter, filtfilt, detrend
-from typing import Optional, List, Dict
-import sys
-import traceback
-import subprocess
-import json
-import argparse
+from typing import Optional, List, Dict, Any
 from playsound3 import playsound
+from pydantic import BaseModel, Field
 import tempfile
 import soundfile as sf
-from pydantic import BaseModel, Field
-import io
 import shutil
 
 # --- Configuration ---
@@ -53,6 +52,14 @@ EEG_EOG_DATA_FILENAME = "eeg_eog_data.dat"
 AUX_SENSOR_DATA_FILENAME = "aux_sensor_data.dat"
 METADATA_FILENAME = "session_metadata.npz"
 
+# --- Audio Cue Configuration ---
+# Construct absolute path for the audio cue file
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+AUDIO_CUE_FILE_PATH = os.path.join(_SCRIPT_DIR, "audio_cue.mp3")
+MAX_SUCCESSIVE_REM_CUES = 2
+TEST_AUDIO_CUE_SUCCESSIVE_PLAYS = 3
+REM_SLEEP_STAGE_VALUE = 0  # Configurable REM sleep stage value
+
 # Global state
 streamer_instance: Optional[Streamer] = None
 session_active = False
@@ -73,6 +80,11 @@ metadata_eeg_eog_timestamps: List[float] = []
 metadata_eeg_eog_sample_counts: List[int] = []
 metadata_aux_timestamps: List[float] = []
 metadata_aux_sample_counts: List[int] = []
+metadata_audio_cue_timestamps: List[float] = []
+
+# REM Cycle State
+is_in_rem_cycle: bool = False
+rem_audio_cues_fired_this_cycle: int = 0
 
 # Counters for samples written
 samples_written_eeg_eog = 0
@@ -142,7 +154,7 @@ def _ensure_dir_exists(path):
 
 async def _save_final_metadata(current_session_data_path: Optional[str], current_session_info: Dict):
     global streamer_instance, metadata_eeg_eog_timestamps, metadata_eeg_eog_sample_counts
-    global metadata_aux_timestamps, metadata_aux_sample_counts
+    global metadata_aux_timestamps, metadata_aux_sample_counts, metadata_audio_cue_timestamps
 
     if not current_session_data_path or not current_session_info:
         log_session_info(
@@ -164,6 +176,10 @@ async def _save_final_metadata(current_session_data_path: Optional[str], current
         metadata_aux_timestamps, dtype=np.float64)
     final_metadata_to_save["metadata_aux_sample_counts"] = np.array(
         metadata_aux_sample_counts, dtype=np.int32)
+
+    final_metadata_to_save["audio_cue_timestamps"] = np.array(
+        metadata_audio_cue_timestamps, dtype=np.float64
+    )
 
     scores_to_save = {}
     score_keys = ["array__sleep_stage", "array__poas",
@@ -209,6 +225,64 @@ async def _save_final_metadata(current_session_data_path: Optional[str], current
             f"CRITICAL ERROR: Could not save final .npz metadata to '{metadata_filepath}': {e}\n{traceback.format_exc()}", current_session_data_path)
 
 
+async def fire_rem_audio_cues_sequence():
+    global session_active, is_in_rem_cycle, rem_audio_cues_fired_this_cycle
+    global session_max_audio_volume, AUDIO_CUE_FILE_PATH, metadata_audio_cue_timestamps
+    global session_data_path, MAX_SUCCESSIVE_REM_CUES
+
+    log_session_info("REM audio cue sequence initiated.", session_data_path)
+    fired_in_this_activation = 0
+
+    for i in range(MAX_SUCCESSIVE_REM_CUES):
+        if not session_active or not is_in_rem_cycle:
+            log_session_info(
+                f"REM audio cue sequence interrupted (session_active: {session_active}, is_in_rem_cycle: {is_in_rem_cycle}).", session_data_path)
+            break
+
+        if rem_audio_cues_fired_this_cycle >= MAX_SUCCESSIVE_REM_CUES:
+            log_session_info(
+                f"Max REM cues for this cycle ({MAX_SUCCESSIVE_REM_CUES}) already fired. Sequence will not fire more.", session_data_path)
+            break
+
+        await asyncio.sleep(5.0)  # Wait 5 seconds
+
+        if not session_active or not is_in_rem_cycle:  # Re-check after sleep
+            log_session_info(
+                "REM audio cue sequence interrupted after 5s wait.", session_data_path)
+            break
+
+        try:
+            log_session_info(
+                f"Firing REM audio cue #{rem_audio_cues_fired_this_cycle + 1} (Attempt {i+1} in sequence). Volume conceptually: {session_max_audio_volume}", session_data_path)
+            if not os.path.exists(AUDIO_CUE_FILE_PATH):
+                log_session_error(
+                    f"Audio cue file not found at {AUDIO_CUE_FILE_PATH}. Cannot play REM cue.", session_data_path)
+                break
+
+            current_time = time.time()  # Capture time before playing
+            metadata_audio_cue_timestamps.append(
+                current_time)  # Store timestamp
+            # Play sound
+            await run_in_threadpool(playsound, AUDIO_CUE_FILE_PATH)
+
+            rem_audio_cues_fired_this_cycle += 1
+            fired_in_this_activation += 1
+            log_session_info(
+                f"REM audio cue #{rem_audio_cues_fired_this_cycle} initiated successfully at {current_time}. Playback started.", session_data_path)
+
+            if i < MAX_SUCCESSIVE_REM_CUES - 1:  # If not the last cue in the sequence
+                # Wait 5 seconds before next cue in sequence
+                await asyncio.sleep(5.0)
+
+        except Exception as e_audio:
+            log_session_error(
+                f"Error playing REM audio cue: {e_audio}\n{traceback.format_exc()}", session_data_path)
+            break
+
+    log_session_info(
+        f"REM audio cue sequence finished. Fired {fired_in_this_activation} cues in this activation.", session_data_path)
+
+
 async def real_time_processing_loop():
     global session_active, current_status, streamer_instance, session_data_path, session_info_global
     global eeg_eog_data_file_handle, aux_sensor_data_file_handle
@@ -216,6 +290,7 @@ async def real_time_processing_loop():
     global metadata_aux_timestamps, metadata_aux_sample_counts
     global samples_written_eeg_eog
     global LOG_FILTERED_DATA
+    global is_in_rem_cycle, rem_audio_cues_fired_this_cycle
 
     loop_properly_initialized = False
     current_status = "Real-time processing loop started."
@@ -233,102 +308,137 @@ async def real_time_processing_loop():
 
     try:
         while session_active:
-            if streamer_instance is None:
-                current_status = "Error: Streamer not available."
-                log_session_error(current_status, session_data_path)
-                session_active = False
-                break
+            loop_start_time = time.monotonic()
 
-            now = time.time()
+            if streamer_instance and streamer_instance.DATA:
+                # EEG/EOG Data Processing
+                f_eeg_all = streamer_instance.DATA["FILTERED"]["EEG"]
 
-            f_eeg_all = streamer_instance.DATA["FILTERED"]["EEG"]
+                if f_eeg_all is None or f_eeg_all.ndim != 2 or f_eeg_all.shape[0] != 4 or f_eeg_all.shape[1] == 0:
+                    await asyncio.sleep(0.1)
+                    continue
 
-            if f_eeg_all is None or f_eeg_all.ndim != 2 or f_eeg_all.shape[0] != 4 or f_eeg_all.shape[1] == 0:
-                await asyncio.sleep(0.1)
-                continue
+                current_total_filt_eeg_samples = f_eeg_all.shape[1]
 
-            current_total_filt_eeg_samples = f_eeg_all.shape[1]
+                if current_total_filt_eeg_samples <= samples_written_eeg_eog:
+                    await asyncio.sleep(0.1)
+                    continue
 
-            if current_total_filt_eeg_samples <= samples_written_eeg_eog:
-                await asyncio.sleep(0.1)
-                continue
+                new_n_samples = current_total_filt_eeg_samples - samples_written_eeg_eog
+                new_filt_eeg = f_eeg_all[:, -new_n_samples:]
 
-            new_n_samples = current_total_filt_eeg_samples - samples_written_eeg_eog
-            new_filt_eeg = f_eeg_all[:, -new_n_samples:]
+                r_eeg_all = streamer_instance.DATA["RAW"]["EEG"]
+                if r_eeg_all is not None and r_eeg_all.ndim == 2 and r_eeg_all.shape[1] == 6 and r_eeg_all.shape[0] >= new_n_samples:
+                    new_raw_eeg_T = r_eeg_all[-new_n_samples:, :].T
+                else:
+                    new_raw_eeg_T = np.full(
+                        (6, new_n_samples), np.nan, dtype=EEG_DATA_TYPE)
 
-            r_eeg_all = streamer_instance.DATA["RAW"]["EEG"]
-            if r_eeg_all is not None and r_eeg_all.ndim == 2 and r_eeg_all.shape[1] == 6 and r_eeg_all.shape[0] >= new_n_samples:
-                new_raw_eeg_T = r_eeg_all[-new_n_samples:, :].T
-            else:
-                new_raw_eeg_T = np.full(
-                    (6, new_n_samples), np.nan, dtype=EEG_DATA_TYPE)
+                f_eog_all = streamer_instance.DATA["FILTERED"]["EOG"]
+                if f_eog_all is not None and f_eog_all.ndim == 2 and f_eog_all.shape[0] == 4 and f_eog_all.shape[1] >= new_n_samples:
+                    new_filt_eog = f_eog_all[:, -new_n_samples:]
+                else:
+                    new_filt_eog = np.full(
+                        (4, new_n_samples), np.nan, dtype=EEG_DATA_TYPE)
 
-            f_eog_all = streamer_instance.DATA["FILTERED"]["EOG"]
-            if f_eog_all is not None and f_eog_all.ndim == 2 and f_eog_all.shape[0] == 4 and f_eog_all.shape[1] >= new_n_samples:
-                new_filt_eog = f_eog_all[:, -new_n_samples:]
-            else:
-                new_filt_eog = np.full(
-                    (4, new_n_samples), np.nan, dtype=EEG_DATA_TYPE)
+                eeg_eog_block = np.vstack(
+                    [new_raw_eeg_T, new_filt_eeg, new_filt_eog])
+                if eeg_eog_data_file_handle and not eeg_eog_data_file_handle.closed:
+                    eeg_eog_data_file_handle.write(
+                        eeg_eog_block.astype(EEG_DATA_TYPE).tobytes())
+                metadata_eeg_eog_timestamps.append(time.time())
+                metadata_eeg_eog_sample_counts.append(new_n_samples)
 
-            eeg_eog_block = np.vstack(
-                [new_raw_eeg_T, new_filt_eeg, new_filt_eog])
-            if eeg_eog_data_file_handle and not eeg_eog_data_file_handle.closed:
-                eeg_eog_data_file_handle.write(
-                    eeg_eog_block.astype(EEG_DATA_TYPE).tobytes())
-            metadata_eeg_eog_timestamps.append(now)
-            metadata_eeg_eog_sample_counts.append(new_n_samples)
+                f_emg_all = streamer_instance.DATA["FILTERED"]["EMG"]
+                if f_emg_all is not None and f_emg_all.ndim == 2 and f_emg_all.shape[0] == 4 and f_emg_all.shape[1] >= new_n_samples:
+                    new_filt_emg = f_emg_all[:, -new_n_samples:]
+                else:
+                    new_filt_emg = np.full(
+                        (4, new_n_samples), np.nan, dtype=EEG_DATA_TYPE)
 
-            f_emg_all = streamer_instance.DATA["FILTERED"]["EMG"]
-            if f_emg_all is not None and f_emg_all.ndim == 2 and f_emg_all.shape[0] == 4 and f_emg_all.shape[1] >= new_n_samples:
-                new_filt_emg = f_emg_all[:, -new_n_samples:]
-            else:
-                new_filt_emg = np.full(
-                    (4, new_n_samples), np.nan, dtype=EEG_DATA_TYPE)
+                r_imu_all = streamer_instance.DATA["RAW"]["IMU"]
+                if r_imu_all is not None and r_imu_all.ndim == 2 and r_imu_all.shape[1] == 3 and r_imu_all.shape[0] >= new_n_samples:
+                    new_raw_imu_T = r_imu_all[-new_n_samples:, :].T
+                else:
+                    new_raw_imu_T = np.full(
+                        (3, new_n_samples), np.nan, dtype=EEG_DATA_TYPE)
 
-            r_imu_all = streamer_instance.DATA["RAW"]["IMU"]
-            if r_imu_all is not None and r_imu_all.ndim == 2 and r_imu_all.shape[1] == 3 and r_imu_all.shape[0] >= new_n_samples:
-                new_raw_imu_T = r_imu_all[-new_n_samples:, :].T
-            else:
-                new_raw_imu_T = np.full(
-                    (3, new_n_samples), np.nan, dtype=EEG_DATA_TYPE)
+                r_ppg_all = streamer_instance.DATA["RAW"]["PPG"]
+                if r_ppg_all is not None and r_ppg_all.ndim == 2 and r_ppg_all.shape[1] == 3 and r_ppg_all.shape[0] >= new_n_samples:
+                    new_raw_ppg_T = r_ppg_all[-new_n_samples:, :].T
+                else:
+                    new_raw_ppg_T = np.full(
+                        (3, new_n_samples), np.nan, dtype=EEG_DATA_TYPE)
 
-            r_ppg_all = streamer_instance.DATA["RAW"]["PPG"]
-            if r_ppg_all is not None and r_ppg_all.ndim == 2 and r_ppg_all.shape[1] == 3 and r_ppg_all.shape[0] >= new_n_samples:
-                new_raw_ppg_T = r_ppg_all[-new_n_samples:, :].T
-            else:
-                new_raw_ppg_T = np.full(
-                    (3, new_n_samples), np.nan, dtype=EEG_DATA_TYPE)
+                aux_block = np.vstack(
+                    [new_filt_emg, new_raw_imu_T, new_raw_ppg_T])
+                if aux_sensor_data_file_handle and not aux_sensor_data_file_handle.closed:
+                    aux_sensor_data_file_handle.write(
+                        aux_block.astype(EEG_DATA_TYPE).tobytes())
+                metadata_aux_timestamps.append(time.time())
+                metadata_aux_sample_counts.append(new_n_samples)
 
-            aux_block = np.vstack([new_filt_emg, new_raw_imu_T, new_raw_ppg_T])
-            if aux_sensor_data_file_handle and not aux_sensor_data_file_handle.closed:
-                aux_sensor_data_file_handle.write(
-                    aux_block.astype(EEG_DATA_TYPE).tobytes())
-            metadata_aux_timestamps.append(now)
-            metadata_aux_sample_counts.append(new_n_samples)
+                samples_written_eeg_eog += new_n_samples
 
-            samples_written_eeg_eog += new_n_samples
+                # REM Detection and Audio Cue Logic
+                try:
+                    if streamer_instance and streamer_instance.SCORES:  # Ensure SCORES object exists
+                        sleep_stage_value = None
+                        try:
+                            sleep_stage_value = streamer_instance.SCORES.get(
+                                "sleep_stage")
+                        except Exception as e_get_score:
+                            log_session_error(
+                                f"Error getting sleep stage from streamer.SCORES: {e_get_score}", session_data_path)
+                            # Safeguard: If we can't get the score, assume not in REM to stop cues.
+                            if is_in_rem_cycle:
+                                log_session_info(
+                                    "Setting is_in_rem_cycle to False due to error retrieving sleep stage.", session_data_path)
+                                is_in_rem_cycle = False
 
-            if LOG_FILTERED_DATA and new_n_samples > 0:
-                num_samples_to_log = min(5, new_n_samples)
-                log_session_info(
-                    f"-- Filtered EEG (last {num_samples_to_log} samples) --", session_data_path)
-                for i in range(new_filt_eeg.shape[0]):
+                        if sleep_stage_value == REM_SLEEP_STAGE_VALUE:  # Use the constant here
+                            if not is_in_rem_cycle:
+                                log_session_info(
+                                    f"REM sleep stage (value {REM_SLEEP_STAGE_VALUE}) DETECTED. Initiating audio cue sequence.", session_data_path)
+                                is_in_rem_cycle = True
+                                rem_audio_cues_fired_this_cycle = 0  # Reset for the new REM cycle
+                                asyncio.create_task(
+                                    fire_rem_audio_cues_sequence())
+                        # Not in REM (stage is not REM_SLEEP_STAGE_VALUE, or sleep_stage_value is None due to error)
+                        else:
+                            if is_in_rem_cycle:
+                                log_session_info(
+                                    f"Exited REM sleep stage. Current stage value: {sleep_stage_value}.", session_data_path)
+                                is_in_rem_cycle = False
+                    else:
+                        pass
+
+                except AttributeError:
                     log_session_info(
-                        f"EEG Ch {i+1}: {new_filt_eeg[i, -num_samples_to_log:]}", session_data_path)
-                log_session_info(
-                    f"-- Filtered EOG (last {num_samples_to_log} samples) --", session_data_path)
-                for i in range(new_filt_eog.shape[0]):
+                        "AttributeError: Streamer SCORES not available (this specific log should be rare).", session_data_path)
+
+                if LOG_FILTERED_DATA and new_n_samples > 0:
+                    num_samples_to_log = min(5, new_n_samples)
                     log_session_info(
-                        f"EOG Ch {i+1}: {new_filt_eog[i, -num_samples_to_log:]}", session_data_path)
-                if f_emg_all is not None:
-                    log_session_info(
-                        f"-- Filtered EMG (last {num_samples_to_log} samples) --", session_data_path)
-                    for i in range(new_filt_emg.shape[0]):
+                        f"-- Filtered EEG (last {num_samples_to_log} samples) --", session_data_path)
+                    for i in range(new_filt_eeg.shape[0]):
                         log_session_info(
-                            f"EMG Ch {i+1}: {new_filt_emg[i, -num_samples_to_log:]}", session_data_path)
+                            f"EEG Ch {i+1}: {new_filt_eeg[i, -num_samples_to_log:]}", session_data_path)
+                    log_session_info(
+                        f"-- Filtered EOG (last {num_samples_to_log} samples) --", session_data_path)
+                    for i in range(new_filt_eog.shape[0]):
+                        log_session_info(
+                            f"EOG Ch {i+1}: {new_filt_eog[i, -num_samples_to_log:]}", session_data_path)
+                    if f_emg_all is not None:
+                        log_session_info(
+                            f"-- Filtered EMG (last {num_samples_to_log} samples) --", session_data_path)
+                        for i in range(new_filt_emg.shape[0]):
+                            log_session_info(
+                                f"EMG Ch {i+1}: {new_filt_emg[i, -num_samples_to_log:]}", session_data_path)
 
-            current_status = f"Processing... Session Time: {streamer_instance.session_dur:.2f}s. Samples written this block: {new_n_samples}"
-            await asyncio.sleep(0.1)
+            processing_time = time.monotonic() - loop_start_time
+            sleep_duration = max(0, (1.0 / 20.0) - processing_time)
+            await asyncio.sleep(sleep_duration)
 
         current_status = "Session ended. Processing loop finalizing."
         log_session_info(current_status, session_data_path)
@@ -503,8 +613,9 @@ async def start_session(background_tasks: BackgroundTasks):
     global is_frenz_band_available, DEVICE_ID, PRODUCT_KEY, FS, EEG_DATA_TYPE
     global eeg_eog_data_file_handle, aux_sensor_data_file_handle
     global metadata_eeg_eog_timestamps, metadata_eeg_eog_sample_counts
-    global metadata_aux_timestamps, metadata_aux_sample_counts
+    global metadata_aux_timestamps, metadata_aux_sample_counts, metadata_audio_cue_timestamps
     global samples_written_eeg_eog
+    global is_in_rem_cycle, rem_audio_cues_fired_this_cycle
 
     current_scan_time = time.time()
     if not is_frenz_band_available or (current_scan_time - last_frenz_scan_time > FRENZ_SCAN_CACHE_DURATION_S / 2):
@@ -560,6 +671,10 @@ async def start_session(background_tasks: BackgroundTasks):
     metadata_eeg_eog_sample_counts.clear()
     metadata_aux_timestamps.clear()
     metadata_aux_sample_counts.clear()
+    metadata_audio_cue_timestamps.clear()
+
+    is_in_rem_cycle = False
+    rem_audio_cues_fired_this_cycle = 0
 
     session_info_global = {
         "product_key": PRODUCT_KEY,
@@ -787,74 +902,97 @@ class VolumeRequest(BaseModel):
                           description="Volume level, from 0.0 to 1.0")
 
 
+MAX_SAFE_AUDIO_VOLUME = 1.0
 
-# Lower the maximum allowed volume for safety
-MAX_SAFE_AUDIO_VOLUME = 0.2  # Reduce this value as needed (was 1.0, now 0.3)
+
+@app.get("/audio/get_config")
+async def get_audio_config():
+    """
+    Returns audio-related configuration like the maximum safe audio volume.
+    """
+    return {
+        "max_safe_audio_volume": MAX_SAFE_AUDIO_VOLUME,
+        "max_successive_rem_cues": MAX_SUCCESSIVE_REM_CUES,
+        "test_audio_cue_successive_plays": TEST_AUDIO_CUE_SUCCESSIVE_PLAYS
+    }
+
 
 @app.post("/audio/set_max_volume")
 async def set_max_volume(request: VolumeRequest):
     global session_max_audio_volume
-    # Clamp the requested volume to the new lower max
-    safe_volume = min(request.volume, MAX_SAFE_AUDIO_VOLUME)
-    session_max_audio_volume = safe_volume
-    log_session_info(
-        f"Maximum audio cue volume set to {session_max_audio_volume} (user requested {request.volume}, capped at {MAX_SAFE_AUDIO_VOLUME})", None)
-    return {"status": "success", "message": f"Max audio cue volume set to {session_max_audio_volume} (max allowed: {MAX_SAFE_AUDIO_VOLUME})"}
+    if not (0.0 <= request.volume <= MAX_SAFE_AUDIO_VOLUME):
+        detail = f"Volume must be between 0.0 and {MAX_SAFE_AUDIO_VOLUME} (safe maximum)."
+        log_session_error(
+            f"/audio/set_max_volume: Invalid volume {request.volume}. {detail}", None)
+        raise HTTPException(status_code=400, detail=detail)
 
+    session_max_audio_volume = request.volume
+    log_session_info(
+        f"Session max audio volume set to: {session_max_audio_volume}", None)
+    return {"status": "success", "message": f"Max audio volume set to {session_max_audio_volume}"}
 
 
 @app.post("/audio/play_sample_cue")
 async def play_sample_cue(request: VolumeRequest):
-    # Always cap the volume to the safe max
-    volume = min(request.volume, MAX_SAFE_AUDIO_VOLUME)
-    sample_rate = 22050
-    duration = 0.5
-    num_samples = int(sample_rate * duration)
+    global AUDIO_CUE_FILE_PATH
 
-    noise = (np.random.rand(num_samples) * 2 - 1)
+    if not (0.0 <= request.volume <= MAX_SAFE_AUDIO_VOLUME):
+        detail = f"Volume for sample cue must be between 0.0 and {MAX_SAFE_AUDIO_VOLUME}."
+        log_session_error(
+            f"/audio/play_sample_cue: Invalid volume {request.volume}. {detail}", None)
+        raise HTTPException(status_code=400, detail=detail)
 
-    audio_data = (noise * volume * 32767).astype(np.int16)
+    log_session_info(
+        f"Playing sample audio cue at conceptual volume: {request.volume}", None)
 
-    temp_file_name: Optional[str] = None
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_f:
-            temp_file_name = tmp_f.name
-
-        sf.write(temp_file_name, audio_data, sample_rate, subtype='PCM_16')
-
-        await run_in_threadpool(playsound, temp_file_name, block=True)
-
-        return {"status": "success", "message": f"Sample cue played at volume {volume} (max allowed: {MAX_SAFE_AUDIO_VOLUME})"}
-    except Exception as e:
-        error_msg = f"Error playing sample cue: {e}\n{traceback.format_exc()}"
-        log_session_error(error_msg, None)
+    if not os.path.exists(AUDIO_CUE_FILE_PATH):
+        log_session_error(
+            f"Sample audio cue file not found at {AUDIO_CUE_FILE_PATH}", None)
         raise HTTPException(
-            status_code=500, detail=f"Error playing sample cue: {e}")
-    finally:
-        if temp_file_name and os.path.exists(temp_file_name):
-            try:
-                os.remove(temp_file_name)
-            except Exception as e_del:
-                log_session_info(
-                    f"WARNING: Could not delete temporary audio file {temp_file_name}: {e_del}", None)
+            status_code=500, detail=f"Sample audio cue file not found: {AUDIO_CUE_FILE_PATH}")
+    try:
+        await run_in_threadpool(playsound, AUDIO_CUE_FILE_PATH)
+        log_session_info("Sample audio cue played successfully.", None)
+        return {"status": "success", "message": "Sample audio cue played."}
+    except Exception as e:
+        log_session_error(f"Error playing sample audio cue: {e}", None)
+        raise HTTPException(
+            status_code=500, detail=f"Error playing sample audio cue: {str(e)}")
 
 
-try:
-    import numpy as np
-except ImportError:
-    print("Numpy is not installed. Please install it: pip install numpy")
+@app.post("/audio/test_rem_cue")
+async def test_rem_audio_cue():
+    global session_max_audio_volume, AUDIO_CUE_FILE_PATH, TEST_AUDIO_CUE_SUCCESSIVE_PLAYS
 
-try:
-    from scipy.signal import butter, filtfilt, medfilt, detrend
-except ImportError:
-    print("Scipy is not installed. Please install it: pip install scipy")
+    log_message_prefix = "/audio/test_rem_cue"
+    log_session_info(
+        f"{log_message_prefix}: Test REM audio cue requested.", None)
 
-try:
-    from frenztoolkit import Streamer
-except ImportError as e:
-    log_session_error(
-        f"CRITICAL IMPORT ERROR: frenztoolkit not found: {e}", None)
-    print("CRITICAL: frenztoolkit is not installed. The application will not function.", file=sys.stderr)
+    if not os.path.exists(AUDIO_CUE_FILE_PATH):
+        log_session_error(
+            f"{log_message_prefix}: Audio cue file not found at {AUDIO_CUE_FILE_PATH}", None)
+        raise HTTPException(
+            status_code=500, detail=f"Audio cue file not found: {AUDIO_CUE_FILE_PATH}")
+
+    try:
+        for i in range(TEST_AUDIO_CUE_SUCCESSIVE_PLAYS):
+            log_session_info(
+                f"{log_message_prefix}: Playing test cue, iteration {i+1}/{TEST_AUDIO_CUE_SUCCESSIVE_PLAYS}. Volume conceptually: {session_max_audio_volume}", None)
+            await run_in_threadpool(playsound, AUDIO_CUE_FILE_PATH)
+            log_session_info(
+                f"{log_message_prefix}: Test cue iteration {i+1} finished.", None)
+            if i < TEST_AUDIO_CUE_SUCCESSIVE_PLAYS - 1:
+                await asyncio.sleep(5.0)
+
+        log_session_info(
+            f"{log_message_prefix}: Test REM audio cue sequence completed successfully.", None)
+        return {"status": "success", "message": f"Test audio cue played {TEST_AUDIO_CUE_SUCCESSIVE_PLAYS} times."}
+    except Exception as e:
+        log_session_error(
+            f"{log_message_prefix}: Error playing test audio cue: {e}\n{traceback.format_exc()}", None)
+        raise HTTPException(
+            status_code=500, detail=f"Error playing test audio cue: {str(e)}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(

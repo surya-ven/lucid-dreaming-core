@@ -3,8 +3,7 @@ import time
 import numpy as np
 from scipy import signal
 from sklearn.decomposition import FastICA
-from alertness_detection import compute_alertness_score, calculate_DL_based_alertness_score
-from test_custom_save import last_alertness_compute_time
+from alertness_detection import calculate_DL_based_alertness_score
 
 # import matplotlib.pyplot as plt # Uncomment for debugging plots
 
@@ -15,7 +14,7 @@ DEVICE_ID = "FRENZI40"
 # !!! IMPORTANT: Based on your terminal output, FS appears to be around 126 Hz.
 # (e.g., (225 samples - 99 samples) / (9.25s - 8.24s) approx = 126 samples/sec)
 # PLEASE VERIFY THIS with official FRENZ Brainband specs. This is CRITICAL.
-FS = 126.0  # Sampling Frequency in Hz (Observed, NEEDS VERIFICATION)
+FS = 125.0  # Sampling Frequency in Hz (Observed, NEEDS VERIFICATION)
 
 NOTCH_FREQ = 50.0
 NOTCH_QUALITY_FACTOR = 30.0

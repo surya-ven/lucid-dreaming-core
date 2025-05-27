@@ -191,24 +191,23 @@
 
                 <!-- Volume Control Slider -->
                 <div class="volume-slider-container">
-                    <label for="volumeSlider"
-                        >Max Audio Cue Volume:
-                        <span id="volumeValueLabel">80</span>%</label
-                    >
+                    <label for="volumeSlider">Set Max Audio Cue Volume:</label>
                     <input
                         type="range"
                         id="volumeSlider"
                         min="0"
-                        max="100"
-                        value="80"
+                        max="0.2"
+                        step="0.01"
+                        value="0.1"
                     />
-                    <button id="setVolumeButton">Set Max Volume</button>
-                    <p>
-                        <small
-                            >Adjust slider to hear a sample sound. Click "Set
-                            Max Volume" to save for the session.</small
-                        >
-                    </p>
+                    <span id="volumeValueLabel">0.1</span>
+                    <button id="setVolumeButton" style="margin-left: 10px">
+                        Set Volume
+                    </button>
+                    <button id="testREMStimuliButton" style="margin-left: 10px">
+                        Test REM Stimuli (x3)
+                    </button>
+                    <!-- Added Test Button -->
                 </div>
 
                 <!-- Added this button -->
@@ -269,9 +268,9 @@
             let statusInterval = null;
             let currentView = "home"; // 'home' or 'session'
             let sessionStartTime = null;
-            // Set the safe max volume to match backend (keep in sync with MAX_SAFE_AUDIO_VOLUME in main.py)
-            const SAFE_MAX_AUDIO_VOLUME = 0.2;
-            let maxAudioVolume = SAFE_MAX_AUDIO_VOLUME; // Default, matches backend
+            // This will be updated by fetching config from the backend
+            let DYNAMIC_SAFE_MAX_AUDIO_VOLUME = 0.2; // Default, will be overridden
+            let maxAudioVolume = DYNAMIC_SAFE_MAX_AUDIO_VOLUME; // Default, matches backend
             let volumeSliderDebounceTimer = null;
 
             const API_BASE_URL = "";
@@ -302,6 +301,9 @@
             const volumeValueLabel =
                 document.getElementById("volumeValueLabel");
             const setVolumeButton = document.getElementById("setVolumeButton");
+            const testREMStimuliButton = document.getElementById(
+                "testREMStimuliButton"
+            ); // Added
 
             async function checkFrenzAvailability(isManualRefresh = false) {
                 if (isManualRefresh) {
@@ -605,10 +607,10 @@
                 }
             }
 
-
             async function playSampleAudio(volume) {
-                // volume is 0-100 from slider, scale to 0-SAFE_MAX_AUDIO_VOLUME for API
-                const apiVolume = (parseFloat(volume) / 100) * SAFE_MAX_AUDIO_VOLUME;
+                // volume is 0-100 from slider, scale to 0-DYNAMIC_SAFE_MAX_AUDIO_VOLUME for API
+                const apiVolume =
+                    (parseFloat(volume) / 100) * DYNAMIC_SAFE_MAX_AUDIO_VOLUME;
                 try {
                     const response = await fetch(
                         `${API_BASE_URL}/audio/play_sample_cue`,
@@ -632,73 +634,172 @@
             }
 
             async function setMaxAudioVolume(volume) {
-                // volume is 0-100 from slider, scale to 0-SAFE_MAX_AUDIO_VOLUME for API
-                const apiVolume = (parseFloat(volume) / 100) * SAFE_MAX_AUDIO_VOLUME;
+                showLoading(loadingSpinnerHome);
+                clearMessages();
                 try {
-                    setVolumeButton.disabled = true;
-                    setVolumeButton.textContent = "Setting...";
                     const response = await fetch(
                         `${API_BASE_URL}/audio/set_max_volume`,
                         {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ volume: apiVolume }),
+                            body: JSON.stringify({
+                                volume: parseFloat(volume),
+                            }),
                         }
                     );
                     const data = await response.json();
-                    if (response.ok) {
-                        maxAudioVolume = apiVolume; // Update local state
-                        showGeneralMessage(
-                            `Max audio volume set to ${Math.round(
-                                (apiVolume / SAFE_MAX_AUDIO_VOLUME) * 100
-                            )}% (actual: ${(apiVolume).toFixed(2)})`
-                        );
-                        console.log("Max audio volume set:", data.message);
-                    } else {
-                        showError(
+                    if (!response.ok) {
+                        throw new Error(
                             data.detail ||
-                                data.message ||
-                                "Failed to set max volume."
+                                `Failed to set max volume (status ${response.status})`
                         );
                     }
+                    showGeneralMessage(
+                        data.message || "Max audio volume updated."
+                    );
+                    // Update the global maxAudioVolume if successful
+                    maxAudioVolume = parseFloat(volume);
+                    // Optionally, update the slider to reflect this confirmed value if it's different
+                    // from what the user just slid to (e.g. if backend adjusted it)
+                    // volumeSlider.value = maxAudioVolume;
+                    // volumeValueLabel.textContent = maxAudioVolume.toFixed(2);
                 } catch (error) {
-                    console.error("Error setting max volume:", error);
-                    showError("Error setting max volume: " + error.message);
+                    console.error("Error setting max audio volume:", error);
+                    showError(`Error setting max volume: ${error.message}`);
                 } finally {
-                    setVolumeButton.disabled = false;
-                    setVolumeButton.textContent = "Set Max Volume";
+                    showLoading(loadingSpinnerHome, false);
                 }
             }
 
-            document.addEventListener("DOMContentLoaded", () => {
-                startSessionButton.addEventListener("click", startSession);
-                stopSessionButton.addEventListener("click", stopSession);
+            async function fetchAudioConfig() {
+                try {
+                    const response = await fetch(
+                        `${API_BASE_URL}/audio/get_config`
+                    );
+                    if (!response.ok) {
+                        throw new Error(
+                            `Failed to fetch audio config: ${response.status}`
+                        );
+                    }
+                    const config = await response.json();
+                    DYNAMIC_SAFE_MAX_AUDIO_VOLUME =
+                        config.max_safe_audio_volume;
+                    maxAudioVolume = DYNAMIC_SAFE_MAX_AUDIO_VOLUME; // Update this as well
+
+                    // Update slider
+                    volumeSlider.max = DYNAMIC_SAFE_MAX_AUDIO_VOLUME.toFixed(2);
+                    // Adjust current value if it exceeds new max
+                    if (
+                        parseFloat(volumeSlider.value) >
+                        DYNAMIC_SAFE_MAX_AUDIO_VOLUME
+                    ) {
+                        volumeSlider.value =
+                            DYNAMIC_SAFE_MAX_AUDIO_VOLUME.toFixed(2);
+                    }
+                    // Update label based on potentially adjusted value
+                    volumeValueLabel.textContent = parseFloat(
+                        volumeSlider.value
+                    ).toFixed(2);
+
+                    console.log("Audio config loaded:", config);
+                } catch (error) {
+                    console.error("Error fetching audio config:", error);
+                    showError(
+                        "Could not load audio settings from server. Using defaults."
+                    );
+                    // Keep default DYNAMIC_SAFE_MAX_AUDIO_VOLUME if fetch fails
+                    volumeSlider.max = DYNAMIC_SAFE_MAX_AUDIO_VOLUME.toFixed(2);
+                    volumeValueLabel.textContent = parseFloat(
+                        volumeSlider.value
+                    ).toFixed(2);
+                }
+            }
+
+            async function testREMStimuli() {
+                showLoading(loadingSpinnerHome);
+                clearMessages();
+                try {
+                    const response = await fetch(
+                        `${API_BASE_URL}/audio/test_rem_cue`,
+                        {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            // No body needed as per backend implementation for test_rem_cue
+                        }
+                    );
+                    const data = await response.json();
+                    if (!response.ok) {
+                        throw new Error(
+                            data.detail ||
+                                `Failed to test REM stimuli (status ${response.status})`
+                        );
+                    }
+                    showGeneralMessage(
+                        data.message || "REM stimuli test initiated."
+                    );
+                } catch (error) {
+                    console.error("Error testing REM stimuli:", error);
+                    showError(`Error testing REM stimuli: ${error.message}`);
+                } finally {
+                    showLoading(loadingSpinnerHome, false);
+                }
+            }
+
+            document.addEventListener("DOMContentLoaded", async () => {
+                // Fetch audio config first
+                await fetchAudioConfig();
+
+                // Initialize volume slider and label
+                // Max is now set by fetchAudioConfig. Set initial value.
+                let initialSliderValue = Math.min(
+                    maxAudioVolume, // This is now DYNAMIC_SAFE_MAX_AUDIO_VOLUME
+                    DYNAMIC_SAFE_MAX_AUDIO_VOLUME
+                );
+                initialSliderValue = Math.max(
+                    initialSliderValue,
+                    parseFloat(volumeSlider.min)
+                );
+                volumeSlider.value = initialSliderValue.toFixed(2);
+                volumeValueLabel.textContent = initialSliderValue.toFixed(2);
+
+                checkFrenzAvailability();
+                fetchSessionStatus(); // Check if a session is already active from a previous page load
+                loadPastSessions();
+                switchToView("home"); // Default to home view
+
                 refreshFrenzStatusButton.addEventListener("click", () =>
                     checkFrenzAvailability(true)
-                ); // Added listener
+                );
+                startSessionButton.addEventListener("click", startSession);
+                stopSessionButton.addEventListener("click", stopSession);
 
-                switchToView("home");
-                checkFrenzAvailability(); // Initial check on load
-                loadPastSessions();
-
-                // Volume Slider Event Listeners
                 volumeSlider.addEventListener("input", () => {
-                    const currentVolume = volumeSlider.value;
-                    volumeValueLabel.textContent = currentVolume;
-                    // Debounce playing sample audio to avoid too many requests
+                    volumeValueLabel.textContent = parseFloat(
+                        volumeSlider.value
+                    ).toFixed(2);
+                    // Debounce the setMaxAudioVolume call
                     clearTimeout(volumeSliderDebounceTimer);
                     volumeSliderDebounceTimer = setTimeout(() => {
-                        playSampleAudio(currentVolume);
-                    }, 200); // Play after 200ms of no movement
+                        // No longer automatically setting volume on slider input.
+                        // User must click "Set Volume" button.
+                    }, 250); // 250ms debounce
                 });
 
                 setVolumeButton.addEventListener("click", () => {
-                    setMaxAudioVolume(volumeSlider.value);
+                    const currentSliderValue = parseFloat(volumeSlider.value);
+                    setMaxAudioVolume(currentSliderValue); // This updates the backend
+                    playSampleAudio(currentSliderValue); // Add this line to play a sample sound
                 });
 
-                // Set initial slider value from the default maxAudioVolume
-                volumeSlider.value = Math.round(maxAudioVolume * 100);
-                volumeValueLabel.textContent = volumeSlider.value;
+                testREMStimuliButton.addEventListener("click", testREMStimuli); // Added event listener
+
+                // Set initial volume on page load based on the default maxAudioVolume
+                // This ensures the backend is aware of the UI's initial state if it's different from its own default.
+                // setMaxAudioVolume(maxAudioVolume); // Call this to sync with backend on load.
+                // Or, fetch current volume from backend if that's preferred.
+                // For now, let's assume the initial JS `maxAudioVolume` is the source of truth
+                // until user changes it or a session starts with a specific setting.
+                // The `setVolumeButton` click is now the explicit way to set it.
             });
         </script>
     </body>

@@ -22,6 +22,7 @@ segment_length = 30
 sfreq = 125
 n_win, n_step = int(win_sec * sfreq), int(step_sec * sfreq)
 
+
 def preprocess_alertness_data(data):
     # raw_data = data.reshape(-1,4).T
     raw_data = data
@@ -38,6 +39,7 @@ def preprocess_alertness_data(data):
 
     return raw
 
+
 def calculate_DL_based_alertness_score(data):
     segment = data[:, -segment_length * sfreq:]
 
@@ -52,12 +54,12 @@ def predict_alertness_from_segment(data):
     for st in range(0, data.shape[1] - n_win, n_step):
         seg = data[:, st:st + n_win]
         psd, f = psd_array_welch(seg, sfreq, fmin=1, fmax=40, n_fft=n_win)
-        idx = lambda lo, hi: np.logical_and(f >= lo, f < hi)
+        def idx(lo, hi): return np.logical_and(f >= lo, f < hi)
 
         delta = psd[:, idx(1, 4)].mean()
         theta = psd[:, idx(4, 8)].mean()
         alpha = psd[:, idx(8, 13)].mean()
-        beta  = psd[:, idx(13, 30)].mean()
+        beta = psd[:, idx(13, 30)].mean()
         gamma = psd[:, idx(30, 40)].mean()
 
         total = delta + theta + alpha + beta
@@ -69,7 +71,6 @@ def predict_alertness_from_segment(data):
         theta_alpha_ratio = theta / alpha
         delta_theta_ratio = delta / theta
         beta_delta_ratio = beta / delta
-
 
         psd_flat = psd.flatten()
         psd_norm = psd_flat / psd_flat.sum()
@@ -83,22 +84,25 @@ def predict_alertness_from_segment(data):
         hj_complexity = np.sqrt(var2 / var1)
 
         cumsum_psd = np.cumsum(psd_flat)
-        sef95 = np.interp(cumsum_psd[-1] * 0.95, cumsum_psd, np.repeat(f, psd.shape[0]))
+        sef95 = np.interp(cumsum_psd[-1] * 0.95,
+                          cumsum_psd, np.repeat(f, psd.shape[0]))
 
         n_3s = int(sfreq * 3)
         orp_values = []
         for k in range(0, seg.shape[1] - n_3s + 1, n_3s):
             sub_seg = seg[:, k:k+n_3s]
-            sub_psd, freqs = psd_array_welch(sub_seg, sfreq=sfreq, fmin=1, fmax=40, n_fft=n_3s)
+            sub_psd, freqs = psd_array_welch(
+                sub_seg, sfreq=sfreq, fmin=1, fmax=40, n_fft=n_3s)
             bands = four_band_power(sub_psd, freqs)
-            ranks = [digitize_rank(bands[j], qs[list(qs)[j]]) for j in range(4)]
+            ranks = [digitize_rank(bands[j], qs[list(qs)[j]])
+                     for j in range(4)]
             bin_id = make_bin_id(ranks)
             orp_val = b2o.get(bin_id, 1.25)
             orp_values.append(orp_val)
         orp_mean = np.mean(orp_values)
         orp_std = np.std(orp_values)
         orp_range = np.ptp(orp_values)
-        orp_slop  = np.diff(orp_values).mean()
+        orp_slop = np.diff(orp_values).mean()
         orp_cv = orp_std / (orp_mean + 1e-12)
 
         raw_feats.append([
@@ -111,12 +115,12 @@ def predict_alertness_from_segment(data):
         ])
 
     feature_names = [
-            # 'delta', 'theta', 'alpha', 'beta', 'gamma',
-            'rel_delta_power', 'rel_theta_power', 'rel_alpha_power',
-            'alpha_ratio', 'theta_alpha_ratio', 'delta_theta_ratio',
-            'beta_delta_ratio',
-            'spectral_entropy', 'hjorth_mobility', 'hjorth_complexity', 'sef95',
-            'orp_mean', 'orp_std', 'orp_range', 'orp_slope', 'orp_cv'
+        # 'delta', 'theta', 'alpha', 'beta', 'gamma',
+        'rel_delta_power', 'rel_theta_power', 'rel_alpha_power',
+        'alpha_ratio', 'theta_alpha_ratio', 'delta_theta_ratio',
+        'beta_delta_ratio',
+        'spectral_entropy', 'hjorth_mobility', 'hjorth_complexity', 'sef95',
+        'orp_mean', 'orp_std', 'orp_range', 'orp_slope', 'orp_cv'
     ]
 
     df_feat = pd.DataFrame(raw_feats, columns=feature_names)
@@ -125,18 +129,21 @@ def predict_alertness_from_segment(data):
 
     X = scaler.transform(df_feat[feature_names])
 
-    df_feat['alert_pred'] = dp_model.predict(X, batch_size = 2048)
+    df_feat['alert_pred'] = dp_model.predict(X, batch_size=2048)
 
     timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     alertness = df_feat['alert_pred'].iloc[-1]
 
-    df_alert.loc[len(df_alert)] = {"timestamp": timestamp_str, "alertness_raw": alertness}
+    df_alert.loc[len(df_alert)] = {
+        "timestamp": timestamp_str, "alertness_raw": alertness}
 
-    df_alert["alertness_ema"] = df_alert["alertness_raw"].ewm(span=20, adjust=False).mean()
+    df_alert["alertness_ema"] = df_alert["alertness_raw"].ewm(
+        span=20, adjust=False).mean()
 
     ema_alertness = df_alert["alertness_ema"].iloc[-1]
 
     return alertness, ema_alertness, ema_alertness < 0.35
+
 
 def save_alertness_score(df, score):
     timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -146,6 +153,7 @@ def save_alertness_score(df, score):
     }
 
     df["alertness_ema"] = df["alertness_raw"].ewm(span=20, adjust=False).mean()
+
 
 def compute_alertness_score(data, sfreq=125, win_sec=3, step_sec=1, n_fft=256):
     """
@@ -170,14 +178,15 @@ def compute_alertness_score(data, sfreq=125, win_sec=3, step_sec=1, n_fft=256):
         segment = data[:, start:start + n_win_samples]
 
         with use_log_level("ERROR"):
-            psds, freqs = psd_array_welch(segment, sfreq=sfreq, fmin=1, fmax=40, n_fft=n_fft)
+            psds, freqs = psd_array_welch(
+                segment, sfreq=sfreq, fmin=1, fmax=40, n_fft=n_fft)
 
         theta = psds[:, (freqs >= 4) & (freqs <= 8)].mean(axis=1)
         alpha = psds[:, (freqs >= 8) & (freqs <= 12)].mean(axis=1)
-        beta  = psds[:, (freqs >= 13) & (freqs <= 30)].mean(axis=1)
+        beta = psds[:, (freqs >= 13) & (freqs <= 30)].mean(axis=1)
 
         alpha_theta_ratio = alpha / (theta)
-        beta_theta_ratio  = beta / (theta)
+        beta_theta_ratio = beta / (theta)
 
         features_over_time.append({
             "start_time": start / sfreq,
@@ -192,7 +201,7 @@ def compute_alertness_score(data, sfreq=125, win_sec=3, step_sec=1, n_fft=256):
     df = pd.DataFrame(features_over_time)
 
     df['alpha_theta_smooth'] = df['alpha_theta_ratio'].rolling(window=3).mean()
-    df['beta_theta_smooth']  = df['beta_theta_ratio'].rolling(window=3).mean()
+    df['beta_theta_smooth'] = df['beta_theta_ratio'].rolling(window=3).mean()
 
     df['alpha_theta_score'] = df['alpha_theta_smooth'].clip(0.2, 0.6)
     df['alpha_theta_score'] = (df['alpha_theta_score'] - 0.2) / (0.6 - 0.2)
@@ -201,21 +210,26 @@ def compute_alertness_score(data, sfreq=125, win_sec=3, step_sec=1, n_fft=256):
     df['beta_theta_score'] = (df['beta_theta_score'] - 0.2) / (0.6 - 0.2)
 
     # Combine both scores
-    df['alertness_score'] = (df['alpha_theta_score'] + df['beta_theta_score']) / 2
+    df['alertness_score'] = (df['alpha_theta_score'] +
+                             df['beta_theta_score']) / 2
 
     # Final EMA score
-    df['alertness_score_ema'] = df['alertness_score'].ewm(span=100, adjust=True).mean()
+    df['alertness_score_ema'] = df['alertness_score'].ewm(
+        span=100, adjust=True).mean()
 
     # Get the latest alertness score
     latest_score = df['alertness_score_ema'].iloc[-1] if not df.empty else np.nan
 
     return df, latest_score
 
+
 def digitize_rank(value, thresholds):
     return np.searchsorted(thresholds, value)
 
+
 def make_bin_id(ranks):
     return ranks[0]*1000 + ranks[1]*100 + ranks[2]*10 + ranks[3]
+
 
 def four_band_power(psd, freqs):
     return np.array([
