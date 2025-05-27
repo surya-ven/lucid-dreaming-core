@@ -58,7 +58,7 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 AUDIO_CUE_FILE_PATH = os.path.join(_SCRIPT_DIR, "audio_cue.mp3")
 MAX_SUCCESSIVE_REM_CUES = 2
 TEST_AUDIO_CUE_SUCCESSIVE_PLAYS = 3
-REM_SLEEP_STAGE_VALUE = 0  # Configurable REM sleep stage value
+REM_SLEEP_STAGE_VALUE = 3  # Configurable REM sleep stage value
 
 # Global state
 streamer_instance: Optional[Streamer] = None
