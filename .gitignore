@@ -11,3 +11,5 @@ wheels/
 recorded_data
 
 v2/
+extracted_REM_windows.npz
+provided_data/

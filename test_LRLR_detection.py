@@ -15,7 +15,11 @@ import traceback
 
 LRLR_LSTM_MODEL = None
 DEFAULT_LSTM_MODEL_PATH = 'lrlr_lstm_model.keras'
+BEST_MODEL_PATH = 'models/lrlr_conv1d_model_fold__final_all_data.keras'
+BEST_MODEL_THRESHOLD = 0.5575 # Threshold for best model to classify LRLR as True
+
 LSTM_SAMPLE_LENGTH = 750
+MODEL_SAMPLE_LENGTH = 750
 
 rec_data_names = [
     "v2_LRLR_once_1_mix",
@@ -847,7 +851,7 @@ def _preprocess_input_for_lstm(data_segment_raw, model_srate_for_filter=118, mft
 
     return normalized_data
 
-def detect_lrlr_window_from_lstm(eog_data, srate, model_path=DEFAULT_LSTM_MODEL_PATH, detection_threshold=0.5):
+def detect_lrlr_window_from_lstm(eog_data, srate, model_path, detection_threshold=0.5):
     """
     Detects LRLR patterns using the trained LSTM model.
 
@@ -899,6 +903,61 @@ def detect_lrlr_window_from_lstm(eog_data, srate, model_path=DEFAULT_LSTM_MODEL_
         return is_lrlr, prediction_value
     except Exception as e:
         print(f"Error during LSTM prediction: {e}")
+        return False, 0.0 # Return a default value for the prediction if an error occurs
+
+
+def detect_lrlr_window_FINAL_MODEL(eog_data, srate, model_path=DEFAULT_LSTM_MODEL_PATH, detection_threshold=0.5):
+    """
+    Detects LRLR patterns using the trained model.
+
+    Args:
+        eog_data (np.ndarray): EOG data array, expected to have at least 2 channels.
+                               The first two channels will be used.
+        srate (float): Sampling rate of the input eog_data. (Currently used for context,
+                       filter design uses a fixed srate from training).
+        model_path (str): Path to the Keras model file.
+        detection_threshold (float): Threshold for classifying a prediction as LRLR.
+
+    Returns:
+        bool: True if LRLR is detected, False otherwise.
+    """
+    global LRLR_MODEL
+    if LRLR_MODEL is None:
+        try:
+            LRLR_MODEL = tf.keras.models.load_model(model_path)
+            print(f"model '{model_path}' loaded successfully.")
+        except Exception as e:
+            print(f"Error loading model from '{model_path}': {e}")
+            return False, 0.0 # Cannot proceed without the model
+
+    if eog_data.shape[0] < MODEL_SAMPLE_LENGTH:
+        print(f"Warning: EOG data too short for ({eog_data.shape[0]} samples, need {MODEL_SAMPLE_LENGTH}).")
+        return False, 0.0
+    
+    if eog_data.shape[1] < 2:
+        print(f"Warning: EOG data has fewer than 2 channels ({eog_data.shape[1]}). requires 2.")
+        return False, 0.0
+
+    # Extract the last LSTM_SAMPLE_LENGTH samples from the first two channels
+    # Assumes eog_data's first two columns are the ones the Model was trained on.
+    eog_segment_raw = eog_data[-MODEL_SAMPLE_LENGTH:, 0:2]
+
+    # Preprocess the segment
+    # model_srate_for_filter=118 is used internally as that's what the model was trained with.
+    preprocessed_segment = _preprocess_input_for_lstm(eog_segment_raw, model_srate_for_filter=118)
+
+    # Reshape for model prediction: (1, timesteps, features)
+    model_input = np.expand_dims(preprocessed_segment, axis=0)
+
+    # Predict
+    try:
+        # print(f"Model input shape: {model_input.shape}")
+        prediction_value = LRLR_MODEL.predict(model_input, verbose=0)[0][0]
+        is_lrlr = prediction_value > detection_threshold
+        # print(f"Model Prediction: {prediction_value:.4f} -> Detected: {is_lrlr}") # For debugging
+        return is_lrlr, prediction_value
+    except Exception as e:
+        print(f"Error during model prediction: {e}")
         return False, 0.0 # Return a default value for the prediction if an error occurs
 
 
@@ -1239,14 +1298,24 @@ def test1():
         # print(f"shape of data: {data.shape}")
         # plot_exg_channels(data, target_event=loaded_data[:2000, 1])
 
-        new_horiz = np.array([eog_data[:,0], eog_data[:,2],eog_data[:,0] - eog_data[:,2]]).T
-        print(f"shape of new_horiz: {new_horiz.shape}")
+        # new_horiz = np.array([eog_data[:,0], eog_data[:,2],eog_data[:,0] - eog_data[:,2]]).T
+        # print(f"shape of new_horiz: {new_horiz.shape}")
         # print(new_horiz)
+        start_time = time.time()
+        pred_lrlr = detect_lrlr_window_from_lstm(eog_data, srate=118, model_path=BEST_MODEL_PATH, detection_threshold=BEST_MODEL_THRESHOLD)
+        end_time = time.time()
+        execution_time = end_time - start_time
+        print(f"LRLR detected: {pred_lrlr[0]}, Score: {pred_lrlr[1]:.4f}")
+        print(f"Detection time: {execution_time:.4f} seconds")
+        target_event = loaded_data[:, 1]
+        # Get last 750 instances of target event
+        last_750 = target_event[-750:]
+        print(f"Average value of last 750 target events: {np.mean(last_750):.4f}")
+        print(f"Max value of last 750 target events: {np.max(last_750):.4f}")
 
 
-
-        clean = CURRENT_process_eog_for_plotting(np.array(new_horiz), srate=118)
-        plot_eeg_eog_data(clean, session_metadata, colstart=0, colend=3, target_event=loaded_data[:, 1])
+        # clean = CURRENT_process_eog_for_plotting(np.array(new_horiz), srate=118)
+        # plot_eeg_eog_data(clean, session_metadata, colstart=0, colend=3, target_event=loaded_data[:, 1])
 
         # plot_single_channel_data(clean, srate=125)
 
@@ -1259,10 +1328,10 @@ def test1():
         # plot_eeg_eog_data(eog_filt_data, session_metadata, title="post filter", target_event=loaded_data[:2000, 1])
         # pdf_filename = f"{filepath}_postprocessing_plot.pdf"
         # plt.savefig(pdf_filename, format='pdf', bbox_inches='tight')
-        plt.show()
+        # plt.show()
 
 
 if __name__ == "__main__":
-    testmydat()
+    test1()
 
 
