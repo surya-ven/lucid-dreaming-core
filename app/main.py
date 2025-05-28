@@ -19,6 +19,8 @@ import sys
 import io
 import traceback
 import argparse
+from pydub import AudioSegment
+from pydub.playback import play
 import numpy as np
 from scipy.signal import butter, filtfilt, medfilt, detrend
 
@@ -61,7 +63,7 @@ METADATA_FILENAME = "session_metadata.npz"
 # --- Audio Cue Configuration ---
 # Construct absolute path for the audio cue file
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-AUDIO_CUE_FILE_PATH = os.path.join(_SCRIPT_DIR, "audio_cue.mp3")
+AUDIO_CUE_FILE_PATH = "/Users/lejieliu/Documents/CS189/lucid-dreaming-core/app/audio_cue.mp3"
 MAX_SUCCESSIVE_REM_CUES = 2
 TEST_AUDIO_CUE_SUCCESSIVE_PLAYS = 3
 REM_SLEEP_STAGE_VALUE = 3  # Configurable REM sleep stage value
@@ -309,7 +311,9 @@ async def fire_rem_audio_cues_sequence():
             metadata_audio_cue_timestamps.append(
                 current_time)  # Store timestamp
             # Play sound
-            await run_in_threadpool(playsound, AUDIO_CUE_FILE_PATH)
+            sound = AudioSegment.from_file(AUDIO_CUE_FILE_PATH)
+            await run_in_threadpool(play, sound)
+            # await run_in_threadpool(playsound, AUDIO_CUE_FILE_PATH)
 
             rem_audio_cues_fired_this_cycle += 1
             fired_in_this_activation += 1
@@ -1046,7 +1050,9 @@ async def play_sample_cue(request: VolumeRequest):
         raise HTTPException(
             status_code=500, detail=f"Sample audio cue file not found: {AUDIO_CUE_FILE_PATH}")
     try:
-        await run_in_threadpool(playsound, AUDIO_CUE_FILE_PATH)
+        sound = AudioSegment.from_file(AUDIO_CUE_FILE_PATH)
+        await run_in_threadpool(play, sound)
+        # await run_in_threadpool(playsound, AUDIO_CUE_FILE_PATH)
         log_session_info("Sample audio cue played successfully.", None)
         return {"status": "success", "message": "Sample audio cue played."}
     except Exception as e:
@@ -1073,7 +1079,10 @@ async def test_rem_audio_cue():
         for i in range(TEST_AUDIO_CUE_SUCCESSIVE_PLAYS):
             log_session_info(
                 f"{log_message_prefix}: Playing test cue, iteration {i+1}/{TEST_AUDIO_CUE_SUCCESSIVE_PLAYS}. Volume conceptually: {session_max_audio_volume}", None)
-            await run_in_threadpool(playsound, AUDIO_CUE_FILE_PATH)
+            
+            sound = AudioSegment.from_file(AUDIO_CUE_FILE_PATH)
+            await run_in_threadpool(play, sound)
+            # await run_in_threadpool(playsound, AUDIO_CUE_FILE_PATH)
             log_session_info(
                 f"{log_message_prefix}: Test cue iteration {i+1} finished.", None)
             if i < TEST_AUDIO_CUE_SUCCESSIVE_PLAYS - 1:
