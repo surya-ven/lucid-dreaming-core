@@ -1,4 +1,17 @@
 # Conceptual structure for FastAPI app (main.py)
+import shutil
+import soundfile as sf
+import tempfile
+from pydantic import BaseModel, Field
+from playsound3 import playsound
+from typing import Optional, List, Dict, Any, Tuple
+from frenztoolkit import Streamer, Scanner
+from datetime import datetime
+from contextlib import asynccontextmanager
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse
+from fastapi import FastAPI, BackgroundTasks, HTTPException
+from test_lrlr_detection_FINAL import get_lrlr, MODEL_SAMPLE_LENGTH as LRLR_MODEL_SAMPLE_LENGTH_IMPORTED
 import asyncio
 import time
 import os
@@ -9,18 +22,11 @@ import argparse
 import numpy as np
 from scipy.signal import butter, filtfilt, medfilt, detrend
 
-from fastapi import FastAPI, BackgroundTasks, HTTPException
-from fastapi.responses import FileResponse
-from fastapi.concurrency import run_in_threadpool
-from contextlib import asynccontextmanager
-from datetime import datetime
-from frenztoolkit import Streamer, Scanner
-from typing import Optional, List, Dict, Any
-from playsound3 import playsound
-from pydantic import BaseModel, Field
-import tempfile
-import soundfile as sf
-import shutil
+# Add workspace root to sys.path for importing test_lrlr_detection_FINAL
+WORKSPACE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if WORKSPACE_ROOT not in sys.path:
+    sys.path.insert(0, WORKSPACE_ROOT)
+
 
 # --- Configuration ---
 PRODUCT_KEY = "RUtYA4W3kpXi0i9C7VZCQJY5_GRhm4XL2rKp6cviwQI="
@@ -60,6 +66,13 @@ MAX_SUCCESSIVE_REM_CUES = 2
 TEST_AUDIO_CUE_SUCCESSIVE_PLAYS = 3
 REM_SLEEP_STAGE_VALUE = 3  # Configurable REM sleep stage value
 
+# LRLR Detection Configuration
+# Use 750 from imported file
+LRLR_MODEL_SAMPLE_LENGTH = LRLR_MODEL_SAMPLE_LENGTH_IMPORTED
+LRLR_DETECTION_INTERVAL_S = 3.0
+# EOG uses 4 channels (typically the last 4 from the 8 EEG/EOG channels)
+LRLR_EOG_CHANNELS = 4
+
 # Global state
 streamer_instance: Optional[Streamer] = None
 session_active = False
@@ -81,10 +94,17 @@ metadata_eeg_eog_sample_counts: List[int] = []
 metadata_aux_timestamps: List[float] = []
 metadata_aux_sample_counts: List[int] = []
 metadata_audio_cue_timestamps: List[float] = []
+metadata_lrlr_detections: List[Dict[str, Any]] = []
 
 # REM Cycle State
 is_in_rem_cycle: bool = False
 rem_audio_cues_fired_this_cycle: int = 0
+
+# LRLR Detection State
+lrlr_detection_active: bool = False
+last_lrlr_detection_time: float = 0.0
+eog_data_buffer_for_lrlr: np.ndarray = np.empty(
+    (0, LRLR_EOG_CHANNELS), dtype=EEG_DATA_TYPE)
 
 # Counters for samples written
 samples_written_eeg_eog = 0
@@ -155,6 +175,7 @@ def _ensure_dir_exists(path):
 async def _save_final_metadata(current_session_data_path: Optional[str], current_session_info: Dict):
     global streamer_instance, metadata_eeg_eog_timestamps, metadata_eeg_eog_sample_counts
     global metadata_aux_timestamps, metadata_aux_sample_counts, metadata_audio_cue_timestamps
+    global metadata_lrlr_detections
 
     if not current_session_data_path or not current_session_info:
         log_session_info(
@@ -180,6 +201,22 @@ async def _save_final_metadata(current_session_data_path: Optional[str], current
     final_metadata_to_save["audio_cue_timestamps"] = np.array(
         metadata_audio_cue_timestamps, dtype=np.float64
     )
+
+    if metadata_lrlr_detections:
+        lrlr_dtype = np.dtype([
+            ('timestamp', np.float64),
+            ('is_lrlr', np.bool_),
+            ('score', np.float32)
+        ])
+        lrlr_data_tuples = [
+            (d['timestamp'], d['is_lrlr'], d['score'])
+            for d in metadata_lrlr_detections
+        ]
+        final_metadata_to_save["lrlr_detections"] = np.array(
+            lrlr_data_tuples, dtype=lrlr_dtype)
+    else:
+        final_metadata_to_save["lrlr_detections"] = np.array(
+            [], dtype=np.object_)
 
     scores_to_save = {}
     score_keys = ["array__sleep_stage", "array__poas",
@@ -229,8 +266,17 @@ async def fire_rem_audio_cues_sequence():
     global session_active, is_in_rem_cycle, rem_audio_cues_fired_this_cycle
     global session_max_audio_volume, AUDIO_CUE_FILE_PATH, metadata_audio_cue_timestamps
     global session_data_path, MAX_SUCCESSIVE_REM_CUES
+    global lrlr_detection_active, last_lrlr_detection_time
 
     log_session_info("REM audio cue sequence initiated.", session_data_path)
+
+    if is_in_rem_cycle:
+        lrlr_detection_active = True
+        if last_lrlr_detection_time == 0.0:
+            last_lrlr_detection_time = time.time()
+        log_session_info(
+            "LRLR detection enabled due to REM audio cue sequence.", session_data_path)
+
     fired_in_this_activation = 0
 
     for i in range(MAX_SUCCESSIVE_REM_CUES):
@@ -291,6 +337,9 @@ async def real_time_processing_loop():
     global samples_written_eeg_eog
     global LOG_FILTERED_DATA
     global is_in_rem_cycle, rem_audio_cues_fired_this_cycle
+    global lrlr_detection_active, last_lrlr_detection_time, metadata_lrlr_detections
+    global eog_data_buffer_for_lrlr, LRLR_MODEL_SAMPLE_LENGTH, LRLR_DETECTION_INTERVAL_S
+    global EEG_DATA_TYPE
 
     loop_properly_initialized = False
     current_status = "Real-time processing loop started."
@@ -380,6 +429,17 @@ async def real_time_processing_loop():
 
                 samples_written_eeg_eog += new_n_samples
 
+                # EOG Data Buffering for LRLR Detection
+                current_eog_data = new_filt_eog.T.astype(EEG_DATA_TYPE)
+                if eog_data_buffer_for_lrlr.size == 0:
+                    eog_data_buffer_for_lrlr = current_eog_data
+                else:
+                    eog_data_buffer_for_lrlr = np.vstack(
+                        (eog_data_buffer_for_lrlr, current_eog_data))
+
+                if eog_data_buffer_for_lrlr.shape[0] > LRLR_MODEL_SAMPLE_LENGTH:
+                    eog_data_buffer_for_lrlr = eog_data_buffer_for_lrlr[-LRLR_MODEL_SAMPLE_LENGTH:, :]
+
                 # REM Detection and Audio Cue Logic
                 try:
                     if streamer_instance and streamer_instance.SCORES:  # Ensure SCORES object exists
@@ -390,26 +450,54 @@ async def real_time_processing_loop():
                         except Exception as e_get_score:
                             log_session_error(
                                 f"Error getting sleep stage from streamer.SCORES: {e_get_score}", session_data_path)
-                            # Safeguard: If we can't get the score, assume not in REM to stop cues.
                             if is_in_rem_cycle:
                                 log_session_info(
                                     "Setting is_in_rem_cycle to False due to error retrieving sleep stage.", session_data_path)
                                 is_in_rem_cycle = False
 
-                        if sleep_stage_value == REM_SLEEP_STAGE_VALUE:  # Use the constant here
+                        if sleep_stage_value == REM_SLEEP_STAGE_VALUE:
                             if not is_in_rem_cycle:
                                 log_session_info(
                                     f"REM sleep stage (value {REM_SLEEP_STAGE_VALUE}) DETECTED. Initiating audio cue sequence.", session_data_path)
                                 is_in_rem_cycle = True
-                                rem_audio_cues_fired_this_cycle = 0  # Reset for the new REM cycle
+                                rem_audio_cues_fired_this_cycle = 0
                                 asyncio.create_task(
                                     fire_rem_audio_cues_sequence())
-                        # Not in REM (stage is not REM_SLEEP_STAGE_VALUE, or sleep_stage_value is None due to error)
+
+                            if lrlr_detection_active:
+                                current_time_lrlr = time.time()
+                                if current_time_lrlr - last_lrlr_detection_time >= LRLR_DETECTION_INTERVAL_S:
+                                    if eog_data_buffer_for_lrlr.shape[0] >= LRLR_MODEL_SAMPLE_LENGTH:
+                                        data_for_lrlr = eog_data_buffer_for_lrlr
+                                        log_session_info(
+                                            f"Attempting LRLR detection with EOG data shape: {data_for_lrlr.shape}", session_data_path)
+                                        try:
+                                            is_lrlr, score = await run_in_threadpool(
+                                                get_lrlr, data_for_lrlr)
+                                            detection_timestamp = time.time()
+                                            metadata_lrlr_detections.append({
+                                                "timestamp": detection_timestamp,
+                                                "is_lrlr": bool(is_lrlr),
+                                                "score": float(score)
+                                            })
+                                            log_session_info(
+                                                f"LRLR Detection: is_lrlr={is_lrlr}, score={score:.4f}", session_data_path)
+                                        except Exception as e_lrlr:
+                                            log_session_error(
+                                                f"LRLR detection failed: {e_lrlr}\n{traceback.format_exc()}", session_data_path)
+
+                                        last_lrlr_detection_time = current_time_lrlr
+                                    else:
+                                        log_session_info(
+                                            f"LRLR: Not enough EOG data in buffer ({eog_data_buffer_for_lrlr.shape[0]}/{LRLR_MODEL_SAMPLE_LENGTH}) for detection.", session_data_path)
                         else:
                             if is_in_rem_cycle:
                                 log_session_info(
                                     f"Exited REM sleep stage. Current stage value: {sleep_stage_value}.", session_data_path)
                                 is_in_rem_cycle = False
+                                lrlr_detection_active = False
+                                rem_audio_cues_fired_this_cycle = 0
+                                last_lrlr_detection_time = 0.0
                     else:
                         pass
 
@@ -616,6 +704,7 @@ async def start_session(background_tasks: BackgroundTasks):
     global metadata_aux_timestamps, metadata_aux_sample_counts, metadata_audio_cue_timestamps
     global samples_written_eeg_eog
     global is_in_rem_cycle, rem_audio_cues_fired_this_cycle
+    global lrlr_detection_active, last_lrlr_detection_time, metadata_lrlr_detections, eog_data_buffer_for_lrlr
 
     current_scan_time = time.time()
     if not is_frenz_band_available or (current_scan_time - last_frenz_scan_time > FRENZ_SCAN_CACHE_DURATION_S / 2):
@@ -672,6 +761,12 @@ async def start_session(background_tasks: BackgroundTasks):
     metadata_aux_timestamps.clear()
     metadata_aux_sample_counts.clear()
     metadata_audio_cue_timestamps.clear()
+
+    lrlr_detection_active = False
+    last_lrlr_detection_time = 0.0
+    metadata_lrlr_detections.clear()
+    eog_data_buffer_for_lrlr = np.empty(
+        (0, LRLR_EOG_CHANNELS), dtype=EEG_DATA_TYPE)
 
     is_in_rem_cycle = False
     rem_audio_cues_fired_this_cycle = 0
