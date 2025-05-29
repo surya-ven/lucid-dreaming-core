@@ -357,6 +357,7 @@ async def real_time_processing_loop():
     global lrlr_detection_active, last_lrlr_detection_time, metadata_lrlr_detections
     global eog_data_buffer_for_lrlr, LRLR_MODEL_SAMPLE_LENGTH, LRLR_DETECTION_INTERVAL_S
     global EEG_DATA_TYPE
+    global last_alert_time
 
     loop_properly_initialized = False
     current_status = "Real-time processing loop started."
