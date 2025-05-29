@@ -162,11 +162,11 @@ try:
 
             last_alert_time = current_time
             if len(channel_2_data) >= needed_len:
-                eeg_raw_for_pred = channel_2_data[-int(needed_len):]  # 只取前 18750 个点
+                eeg_raw_for_pred = channel_2_data[-int(needed_len):] 
                 score_ewm = predict_alertness_ema(eeg_raw_for_pred)
-                print("alertness EMA分数:", score_ewm)
+                print("alertness EMA socre:", score_ewm)
             else:
-                print(f"数据长度不足, 只有 {len(channel_2_data)}，需要 {needed_len} 才能推理！")
+                print(f"Only {len(channel_2_data)}, need {needed_len} to predict")
             
         feog = streamer.DATA["FILTERED"]["EOG"]
         reeg = streamer.DATA["RAW"]["EEG"]
