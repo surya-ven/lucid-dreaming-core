@@ -51,6 +51,7 @@ epoch_sec = 30
 seq_len = 5
 input_len = epoch_sec * 125  # 3750
 needed_len = seq_len * input_len  # 18750
+last_alert_time = 0
 
 # Signal Quality Check Configuration
 SQC_CHECK_INTERVAL_S = 5.0
@@ -383,18 +384,18 @@ async def real_time_processing_loop():
                     await asyncio.sleep(0.1)
                     continue
 
-                        # print(feeg.shape)
                 current_time = time.time()
                 # compute alertness
                 if (current_time - last_alert_time) >= 3 and f_eeg_all.shape[0] > 0:
 
-                    channel_2_data = f_eeg_all[2, :]   # shape (N,)
+                    channel_2_data = f_eeg_all[2, :]  
 
                     last_alert_time = current_time
                     if len(channel_2_data) >= f_eeg_all:
-                        eeg_raw_for_pred = channel_2_data[-int(needed_len):]  # 只取前 18750 个点
+                        eeg_raw_for_pred = channel_2_data[-int(needed_len):]  
                         score_ewm = predict_alertness_ema(eeg_raw_for_pred)
                         log_session_info("Current alertness score: ", score_ewm)
+                        print("Current alertness score: ", score_ewm)
 
                         if score_ewm>0.6 and is_in_rem_cycle:
                             log_session_info("is in REM cycle and score larger then threshold")
