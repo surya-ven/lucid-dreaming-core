@@ -1243,39 +1243,41 @@ def run_evaluation_scenarios():
 
 
 def testmydat():
-    SESSION_FOLDER_PATH = f"recorded_data/20250524_033637_296315"
-    # SESSION_FOLDER_PATH = f"recorded_data/{rec_data_names[5]}"
+    for filepath in other_rec_data_names[5:9]:
 
-    loaded_data, session_metadata = load_custom_data(SESSION_FOLDER_PATH)
-    display_loaded_data_and_metadata(loaded_data, session_metadata)
+        # SESSION_FOLDER_PATH = f"recorded_data/20250524_033637_296315"
+        SESSION_FOLDER_PATH = f"recorded_data/{rec_data_names[5]}"
 
-    i,j = 0,99999
-    eog_data = loaded_data[i:j,6:10]
-    print(f"shape of eog_data: {eog_data.shape}")
-    print(f"column names: {session_metadata['processed_column_names'][6:10]}")
-    print(f"column names: {session_metadata['processed_column_names']}")
+        loaded_data, session_metadata = load_custom_data(SESSION_FOLDER_PATH)
+        display_loaded_data_and_metadata(loaded_data, session_metadata)
 
-
-    # Show summary statistics
-    # unique_values, counts = np.unique(loaded_data[:,1], return_counts=True)
-    # print("\nSummary:")
-    # for val, count in zip(unique_values, counts):
-    #     print(f"Value {int(val)}: {count} occurrences ({count/len(loaded_data[:,1])*100:.1f}%)")
+        i,j = 0,2500
+        eog_data = loaded_data[i:j,6:10]
+        print(f"shape of eog_data: {eog_data.shape}")
+        print(f"column names: {session_metadata['processed_column_names'][6:10]}")
+        print(f"column names: {session_metadata['processed_column_names']}")
 
 
-    new_horiz = np.array([eog_data[:,0], eog_data[:,2]]).T
-    clean = CURRENT_process_eog_for_plotting(np.array(new_horiz), srate=125)
-    diff_channel = clean[:,0] - clean[:,1]
-    clean = np.column_stack((clean, diff_channel))
+        # Show summary statistics
+        # unique_values, counts = np.unique(loaded_data[:,1], return_counts=True)
+        # print("\nSummary:")
+        # for val, count in zip(unique_values, counts):
+        #     print(f"Value {int(val)}: {count} occurrences ({count/len(loaded_data[:,1])*100:.1f}%)")
 
-    print(f"shape of new_horiz: {new_horiz.shape}")
-    print(f"shape of clean: {clean.shape}")
 
-    plot_eeg_eog_data(clean, session_metadata, colstart=0, colend=3, target_event=loaded_data[i:j, 1])
-    # clld=SURYA_process_eog_for_plotting(np.array(loaded_data), srate=125)
-    # plot_eeg_eog_data(clld, session_metadata, colstart=2, colend=14, target_event=loaded_data[i:j, 1])
+        new_horiz = np.array([eog_data[:,0], eog_data[:,2]]).T
+        clean = CURRENT_process_eog_for_plotting(np.array(new_horiz), srate=125)
+        diff_channel = clean[:,0] - clean[:,1]
+        clean = np.column_stack((clean, diff_channel))
 
-    plt.show()
+        print(f"shape of new_horiz: {new_horiz.shape}")
+        print(f"shape of clean: {clean.shape}")
+
+        plot_eeg_eog_data(clean, session_metadata, colstart=0, colend=3, target_event=loaded_data[i:j, 1])
+        # clld=SURYA_process_eog_for_plotting(np.array(loaded_data), srate=125)
+        # plot_eeg_eog_data(clld, session_metadata, colstart=2, colend=14, target_event=loaded_data[i:j, 1])
+
+        plt.show()
 
 
     
@@ -1332,6 +1334,6 @@ def test1():
 
 
 if __name__ == "__main__":
-    test1()
+    testmydat()
 
 

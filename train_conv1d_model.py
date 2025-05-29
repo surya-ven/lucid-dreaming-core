@@ -126,7 +126,7 @@ def train_lrlr_conv1d(data_path='lstm_training_data.npz', model_save_path_base='
         callbacks = [
             EarlyStopping(
                 monitor='val_auc_pr',
-                patience=15,
+                patience=30,
                 min_delta=1e-4,
                 mode='max',
                 restore_best_weights=True,
@@ -235,16 +235,15 @@ def train_lrlr_conv1d(data_path='lstm_training_data.npz', model_save_path_base='
         plt.legend(['Train', 'Validation'], loc='upper left')
 
         plt.tight_layout()
-        plot_save_path = os.path.splitext(model_save_path_base)[0] + f'_fold_{fold_no}_training_curves.png'
+        plot_save_path = os.path.splitext(model_save_path_base)[0] + f'_fold_{fold_no}_training_curves_v2.png'
         plt.savefig(plot_save_path)
         print(f"Training curves plot for fold {fold_no} saved to {plot_save_path}")
         plt.close()
 
         fold_no += 1
 
-    # Calculate average optimal threshold across folds
-    # For now, we'll use 0.15 based on your results
-    optimal_global_threshold = 0.15
+    # # Calculate average optimal threshold across folds
+    optimal_global_threshold = 0.5
     
     print(f"\n--- K-Fold Cross-Validation Results ---")
     print(f"Average Validation Loss: {np.mean(all_fold_val_loss):.4f} (+/- {np.std(all_fold_val_loss):.4f})")
@@ -300,31 +299,21 @@ def train_lrlr_conv1d(data_path='lstm_training_data.npz', model_save_path_base='
         1: (neg_samples_full / pos_samples_full) * 0.8
     }
     
-    final_callbacks = [
-        EarlyStopping(
-            monitor='loss',
-            patience=10,
-            min_delta=1e-4,
-            mode='min',
-            restore_best_weights=True,
-            verbose=1)
-    ]
-
     print("\nStarting training of the final model on all data...")
     final_model.fit(X, y_full_train,
-                    epochs=50,
+                    epochs=33,
                     batch_size=16,
                     class_weight=final_class_weights,
-                    callbacks=final_callbacks,
+                    callbacks=[],  # No callbacks - train for full epochs
                     verbose=1)
 
     # Save model and optimal threshold
-    final_model_save_path = os.path.splitext(model_save_path_base)[0] + '_final_all_data.keras'
+    final_model_save_path = os.path.splitext(model_save_path_base)[0] + '_final_all_data_v2.keras'
     final_model.save(final_model_save_path)
     print(f"Final model saved to: {final_model_save_path}")
     
     # Save threshold info
-    threshold_save_path = os.path.splitext(model_save_path_base)[0] + '_optimal_threshold.npz'
+    threshold_save_path = os.path.splitext(model_save_path_base)[0] + '_optimal_threshold_v2.npz'
     np.savez(threshold_save_path, optimal_threshold=optimal_global_threshold)
     print(f"Optimal threshold ({optimal_global_threshold}) saved to: {threshold_save_path}")
 

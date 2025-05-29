@@ -263,6 +263,9 @@ def create_lstm_data():
         loaded_data, session_info = load_custom_data(SESSION_FOLDER_PATH)
         loaded_data = loaded_data[:,:10]
 
+        display_loaded_data_and_metadata(loaded_data, session_info)
+
+
         if loaded_data is None or loaded_data.shape[0] < SAMPLE_LENGTH:
             print(f"  Failed to load data or data too short for {filepath_short} (shape: {loaded_data.shape if loaded_data is not None else 'None'}). Skipping.")
             continue
@@ -275,7 +278,9 @@ def create_lstm_data():
         
         try:
             # Select 3rd and 2nd to last columns as EOG data
-            eog_raw_data = loaded_data[:, -4:-2].astype(np.float32)
+            eog_cols = [-4, -2]  # Specify the exact columns we want
+            eog_raw_data = loaded_data[:, eog_cols].astype(np.float32)
+
         except IndexError:
             print(f"  Could not select EOG channels -4:-2 from data with shape {loaded_data.shape} for {filepath_short}. Skipping.")
             continue
