@@ -350,8 +350,7 @@ def detect_lrlr_window_FINAL_MODEL(eog_data, srate, model_path=BEST_MODEL_PATH, 
         return False, 0.0
 
     # Extract the last LSTM_SAMPLE_LENGTH samples from the first two channels
-    # Assumes eog_data's first two columns are the ones the Model was trained on.
-    eog_segment_raw = eog_data[-MODEL_SAMPLE_LENGTH:, 0:2]
+    eog_segment_raw = eog_data[-MODEL_SAMPLE_LENGTH:, [0, 2]]
 
     # Preprocess the segment
     # model_srate_for_filter=118 is used internally as that's what the model was trained with.
@@ -377,6 +376,7 @@ def get_lrlr(eog_data):
     pred_lrlr = detect_lrlr_window_FINAL_MODEL(
         eog_data, srate=118, model_path=BEST_MODEL_PATH, detection_threshold=MODEL_THRESHOLD_90)
     return (pred_lrlr[0], pred_lrlr[1])  # Return tuple (is_lrlr, score)
+
 
 def test1():
     # <<< PLEASE UPDATE THIS PATH >>> ## TO COPY LRLR_1_time_1 ALERTNESS_3minmark_1
