@@ -392,7 +392,7 @@ async def real_time_processing_loop():
                     channel_2_data = f_eeg_all[2, :]  
 
                     last_alert_time = current_time
-                    if len(channel_2_data) >= f_eeg_all:
+                    if len(channel_2_data) >= needed_len:
                         eeg_raw_for_pred = channel_2_data[-int(needed_len):]  
                         score_ewm = predict_alertness_ema(eeg_raw_for_pred)
                         log_session_info("Current alertness score: ", score_ewm)
