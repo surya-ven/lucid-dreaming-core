@@ -1,4 +1,12 @@
 # Conceptual structure for FastAPI app (main.py)
+import os
+import sys
+# Add workspace root to sys.path for importing test_lrlr_detection_FINAL
+WORKSPACE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if WORKSPACE_ROOT not in sys.path:
+    sys.path.insert(0, WORKSPACE_ROOT)
+
+    
 import shutil
 import soundfile as sf
 import tempfile
@@ -14,8 +22,8 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException
 from test_lrlr_detection_FINAL import get_lrlr, MODEL_SAMPLE_LENGTH as LRLR_MODEL_SAMPLE_LENGTH_IMPORTED
 import asyncio
 import time
-import os
-import sys
+
+
 import io
 import traceback
 import argparse
@@ -24,10 +32,7 @@ from pydub.playback import play
 import numpy as np
 from scipy.signal import butter, filtfilt, medfilt, detrend
 
-# Add workspace root to sys.path for importing test_lrlr_detection_FINAL
-WORKSPACE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if WORKSPACE_ROOT not in sys.path:
-    sys.path.insert(0, WORKSPACE_ROOT)
+
 
 
 # --- Configuration ---
@@ -66,7 +71,8 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 AUDIO_CUE_FILE_PATH = "/Users/lejieliu/Documents/CS189/lucid-dreaming-core/app/audio_cue.mp3"
 MAX_SUCCESSIVE_REM_CUES = 2
 TEST_AUDIO_CUE_SUCCESSIVE_PLAYS = 3
-REM_SLEEP_STAGE_VALUE = 3  # Configurable REM sleep stage value
+REM_SLEEP_STAGE_VALUE = 3
+  # Configurable REM sleep stage value
 
 # LRLR Detection Configuration
 # Use 750 from imported file

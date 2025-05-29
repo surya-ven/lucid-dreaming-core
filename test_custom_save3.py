@@ -10,6 +10,7 @@ from datetime import datetime
 # For plotting
 import matplotlib.pyplot as plt
 from scipy.signal import butter, filtfilt, medfilt
+from dl_alertness_detection import predict_alertness_ema
 
 # --- Configuration ---
 PRODUCT_KEY = "RUtYA4W3kpXi0i9C7VZCQJY5_GRhm4XL2rKp6cviwQI="
@@ -20,6 +21,11 @@ EEG_DATA_TYPE = np.float32
 NUM_COMBINED_COLUMNS = 12
 FS = 125.0
 
+epoch_sec = 30
+seq_len = 5
+input_len = epoch_sec * 125  # 3750
+needed_len = seq_len * input_len  # 18750
+
 LEFT_EOG_CH = 0  # Outer-canthus left
 RIGHT_EOG_CH = 2  # Outer-canthus right
 
@@ -28,6 +34,8 @@ parser = argparse.ArgumentParser(
 parser.add_argument("--log-events", action="store_true")
 parser.add_argument("--plot-live", nargs='?', const=True, default=False)
 cli_args = parser.parse_args()
+
+last_alert_time = 0
 
 plot_live_channel = None
 if cli_args.plot_live is True:
@@ -61,6 +69,8 @@ plot_timestamps = []
 plot_data_raw_eeg = [[] for _ in range(4)]
 plot_data_filt_eog = [[] for _ in range(4)]
 horiz_buf = []
+
+
 
 streamer = Streamer(device_id=DEVICE_ID, product_key=PRODUCT_KEY,
                     data_folder=BASE_RECORDING_FOLDER)
@@ -142,6 +152,22 @@ try:
             break
 
         feeg = streamer.DATA["FILTERED"]["EEG"]
+        
+        # print(feeg.shape)
+        current_time = time.time()
+        # compute alertness
+        if (current_time - last_alert_time) >= 3 and feeg.shape[0] > 0:
+
+            channel_2_data = feeg[2, :]   # shape (N,)
+
+            last_alert_time = current_time
+            if len(channel_2_data) >= needed_len:
+                eeg_raw_for_pred = channel_2_data[-int(needed_len):]  # 只取前 18750 个点
+                score_ewm = predict_alertness_ema(eeg_raw_for_pred)
+                print("alertness EMA分数:", score_ewm)
+            else:
+                print(f"数据长度不足, 只有 {len(channel_2_data)}，需要 {needed_len} 才能推理！")
+            
         feog = streamer.DATA["FILTERED"]["EOG"]
         reeg = streamer.DATA["RAW"]["EEG"]
 
