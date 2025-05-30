@@ -414,32 +414,8 @@ async def real_time_processing_loop():
                             log_session_info(f"Current alertness score: {score_ewm}", session_data_path)
                             print(f"Current alertness score: {score_ewm}")
 
-                            if score_ewm>0.6 and is_in_rem_cycle:
+                            if score_ewm>0.5 and is_in_rem_cycle:
                                 log_session_info("is in REM cycle and score larger then threshold", session_data_path)
-                        
-                    if (current_time - last_detect_rem_time) >= 3 and r_eeg_all.shape[0] > 0:
-                        last_detect_rem_time = current_time
-                        rem_need_len = 125 * 30
-                        if len(r_eeg_all) >= 30 * 125:
-                            raw_data = r_eeg_all[:, [0, 1, 3, 4]].T * 1e-8
-                            eeg_raw_for_pred = raw_data[-int(rem_need_len):]
-                            rem_prob =  predict_is_rem(raw_data[-int(rem_need_len):])
-                            log_session_info(f"REM Probability: {rem_prob}.", session_data_path)
-                            print(f"Current rem prob: {rem_prob}")
-
-                            if (rem_prob > 0.5) and (last_alertness < 0.5) and (current_time - last_cue_triger_time) > 50:
-                                # trigger audio cue
-                                sound = AudioSegment.from_file(AUDIO_CUE_FILE_PATH)
-                                await run_in_threadpool(play, sound)
-                                # await run_in_threadpool(playsound, AUDIO_CUE_FILE_PATH)
-                                log_session_info("Sample audio cue played successfully.", session_data_path)
-                            
-                            if (rem_prob > 0.6) and (current_time - last_cue_triger_time) > 20:
-                                # trigger audio cue
-                                sound = AudioSegment.from_file(AUDIO_CUE_FILE_PATH)
-                                await run_in_threadpool(play, sound)
-                                # await run_in_threadpool(playsound, AUDIO_CUE_FILE_PATH)
-                                log_session_info("specific audio cue played successfully.", session_data_path)
                             
 
                 else:
