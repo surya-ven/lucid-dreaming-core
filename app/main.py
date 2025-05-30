@@ -433,7 +433,14 @@ async def real_time_processing_loop():
                                 await run_in_threadpool(play, sound)
                                 # await run_in_threadpool(playsound, AUDIO_CUE_FILE_PATH)
                                 log_session_info("Sample audio cue played successfully.", session_data_path)
-
+                            
+                            if (rem_prob > 0.6) and (current_time - last_cue_triger_time) > 20:
+                                # trigger audio cue
+                                sound = AudioSegment.from_file(AUDIO_CUE_FILE_PATH)
+                                await run_in_threadpool(play, sound)
+                                # await run_in_threadpool(playsound, AUDIO_CUE_FILE_PATH)
+                                log_session_info("specific audio cue played successfully.", session_data_path)
+                            
 
                 else:
                     new_raw_eeg_T = np.full(

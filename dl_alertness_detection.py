@@ -182,7 +182,7 @@ def predict_alertness_ema(eeg_raw, ema_span=200):
         arr_norm = (arr - m) / s
         chunks_zscore.append(arr_norm)
     segs = np.stack(chunks_zscore, axis=0)     # (seq_len, input_len)
-    segs = segs[None, :, :]          
+    segs = segs[None, :, None :]          
     x_tensor = torch.from_numpy(segs.astype(np.float32))
     with torch.no_grad():
         out = model(x_tensor)
