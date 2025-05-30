@@ -309,7 +309,7 @@ async def fire_rem_audio_cues_sequence():
                 f"Max REM cues for this cycle ({MAX_SUCCESSIVE_REM_CUES}) already fired. Sequence will not fire more.", session_data_path)
             break
 
-        await asyncio.sleep(5.0)  # Wait 5 seconds
+        # await asyncio.sleep(0.0)  # Wait 0 seconds
 
         if not session_active or not is_in_rem_cycle:  # Re-check after sleep
             log_session_info(
@@ -401,7 +401,6 @@ async def real_time_processing_loop():
                 r_eeg_all = streamer_instance.DATA["RAW"]["EEG"]
                 if r_eeg_all is not None and r_eeg_all.ndim == 2 and r_eeg_all.shape[1] == 6 and r_eeg_all.shape[0] >= new_n_samples:
                     new_raw_eeg_T = r_eeg_all[-new_n_samples:, :].T
-
                     current_time = time.time()
                     # compute alertness
                     if (current_time - last_alert_time) >= 3 and r_eeg_all.shape[0] > 0:
@@ -411,11 +410,12 @@ async def real_time_processing_loop():
                             eeg_raw_for_pred = raw_data[-int(needed_len):]  
                             score_ewm = predict_alertness_ema(eeg_raw_for_pred)
                             last_alertness = score_ewm
-                            log_session_info(f"Current alertness score: {score_ewm}", session_data_path)
-                            print(f"Current alertness score: {score_ewm}")
+                            log_session_info(f"alertness score: {score_ewm}", session_data_path)
 
                             if score_ewm>0.5 and is_in_rem_cycle:
                                 log_session_info("is in REM cycle and score larger then threshold", session_data_path)
+                        else:
+                            log_session_info(f"current data is not long enough to generate alertness score, a minimum of 150 seconds is required", session_data_path)
                             
 
                 else:
@@ -486,6 +486,8 @@ async def real_time_processing_loop():
                         try:
                             sleep_stage_value = streamer_instance.SCORES.get(
                                 "sleep_stage")
+                            
+                            log_session_info(f"Sleep stage: {sleep_stage_value}", session_data_path)
                         except Exception as e_get_score:
                             log_session_error(
                                 f"Error getting sleep stage from streamer.SCORES: {e_get_score}", session_data_path)
@@ -500,8 +502,21 @@ async def real_time_processing_loop():
                                     f"REM sleep stage (value {REM_SLEEP_STAGE_VALUE}) DETECTED. Initiating audio cue sequence.", session_data_path)
                                 is_in_rem_cycle = True
                                 rem_audio_cues_fired_this_cycle = 0
-                                asyncio.create_task(
-                                    fire_rem_audio_cues_sequence())
+
+                            if last_alertness < 0.5:
+                                log_session_info(
+                                f"Current alertness {last_alertness} is lower than threshold", session_data_path)
+                                if last_cue_triger_time-current_time > 180:
+                                    log_session_info(
+                                    f"trigger the audio cue since last triggered time is 180s before", session_data_path)
+                                    last_cue_triger_time = time.time()
+                                    asyncio.create_task(
+                                            fire_rem_audio_cues_sequence())
+                                else:
+                                    log_session_info(
+                                    f"do not trigger the audio cue since last triggered time is still within 180s", session_data_path)
+
+ 
 
                             if lrlr_detection_active:
                                 current_time_lrlr = time.time()
