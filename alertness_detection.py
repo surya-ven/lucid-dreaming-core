@@ -6,7 +6,6 @@ from mne.time_frequency import psd_array_welch
 import numpy as np
 import mne
 import joblib
-from tensorflow.keras.models import load_model
 
 scaler = joblib.load('models/RandomState42_MLP_scaler.pkl')
 dp_model = load_model('models/alertness_mlp_regressor.h5')

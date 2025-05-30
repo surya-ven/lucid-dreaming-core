@@ -22,7 +22,7 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException
 from test_lrlr_detection_FINAL import get_lrlr, MODEL_SAMPLE_LENGTH as LRLR_MODEL_SAMPLE_LENGTH_IMPORTED
 import asyncio
 import time
-from dl_alertness_detection import predict_alertness_ema
+from dl_alertness_detection import predict_alertness_ema, predict_is_rem
 
 
 import io
@@ -49,9 +49,13 @@ RIGHT_EOG_CH = 2
 
 epoch_sec = 30
 seq_len = 5
+rem_seq_len = 1
 input_len = epoch_sec * 125  # 3750
 needed_len = seq_len * input_len  # 18750
 last_alert_time = 0
+last_detect_rem_time = 0
+last_cue_triger_time = 0
+last_alertness= 1
 
 # Signal Quality Check Configuration
 SQC_CHECK_INTERVAL_S = 5.0
@@ -357,7 +361,7 @@ async def real_time_processing_loop():
     global lrlr_detection_active, last_lrlr_detection_time, metadata_lrlr_detections
     global eog_data_buffer_for_lrlr, LRLR_MODEL_SAMPLE_LENGTH, LRLR_DETECTION_INTERVAL_S
     global EEG_DATA_TYPE
-    global last_alert_time
+    global last_alert_time, last_alertness, last_detect_rem_time, last_cue_triger_time
 
     loop_properly_initialized = False
     current_status = "Real-time processing loop started."
@@ -385,23 +389,6 @@ async def real_time_processing_loop():
                     await asyncio.sleep(0.1)
                     continue
 
-                current_time = time.time()
-                # compute alertness
-                if (current_time - last_alert_time) >= 3 and f_eeg_all.shape[0] > 0:
-
-                    channel_2_data = f_eeg_all[2, :]  
-
-                    last_alert_time = current_time
-                    if len(channel_2_data) >= needed_len:
-                        eeg_raw_for_pred = channel_2_data[-int(needed_len):]  
-                        score_ewm = predict_alertness_ema(eeg_raw_for_pred)
-                        log_session_info(f"Current alertness score: {score_ewm}", session_data_path)
-                        print(f"Current alertness score: {score_ewm}", session_data_path)
-
-                        if score_ewm>0.6 and is_in_rem_cycle:
-                            log_session_info("is in REM cycle and score larger then threshold")
-                    
-
                 current_total_filt_eeg_samples = f_eeg_all.shape[1]
 
                 if current_total_filt_eeg_samples <= samples_written_eeg_eog:
@@ -414,6 +401,40 @@ async def real_time_processing_loop():
                 r_eeg_all = streamer_instance.DATA["RAW"]["EEG"]
                 if r_eeg_all is not None and r_eeg_all.ndim == 2 and r_eeg_all.shape[1] == 6 and r_eeg_all.shape[0] >= new_n_samples:
                     new_raw_eeg_T = r_eeg_all[-new_n_samples:, :].T
+
+                    current_time = time.time()
+                    # compute alertness
+                    if (current_time - last_alert_time) >= 3 and r_eeg_all.shape[0] > 0:
+                        last_alert_time = current_time
+                        if len(r_eeg_all) >= needed_len:
+                            raw_data = r_eeg_all[:, [0, 1, 3, 4]].T * 1e-8
+                            eeg_raw_for_pred = raw_data[-int(needed_len):]  
+                            score_ewm = predict_alertness_ema(eeg_raw_for_pred)
+                            last_alertness = score_ewm
+                            log_session_info(f"Current alertness score: {score_ewm}", session_data_path)
+                            print(f"Current alertness score: {score_ewm}")
+
+                            if score_ewm>0.6 and is_in_rem_cycle:
+                                log_session_info("is in REM cycle and score larger then threshold", session_data_path)
+                        
+                    if (current_time - last_detect_rem_time) >= 3 and r_eeg_all.shape[0] > 0:
+                        last_detect_rem_time = current_time
+                        rem_need_len = 125 * 30
+                        if len(r_eeg_all) >= 30 * 125:
+                            raw_data = r_eeg_all[:, [0, 1, 3, 4]].T * 1e-8
+                            eeg_raw_for_pred = raw_data[-int(rem_need_len):]
+                            rem_prob =  predict_is_rem(raw_data[-int(rem_need_len):])
+                            log_session_info(f"REM Probability: {rem_prob}.", session_data_path)
+                            print(f"Current rem prob: {rem_prob}")
+
+                            if (rem_prob > 0.5) and (last_alertness < 0.5) and (current_time - last_cue_triger_time) > 50:
+                                # trigger audio cue
+                                sound = AudioSegment.from_file(AUDIO_CUE_FILE_PATH)
+                                await run_in_threadpool(play, sound)
+                                # await run_in_threadpool(playsound, AUDIO_CUE_FILE_PATH)
+                                log_session_info("Sample audio cue played successfully.", session_data_path)
+
+
                 else:
                     new_raw_eeg_T = np.full(
                         (6, new_n_samples), np.nan, dtype=EEG_DATA_TYPE)
