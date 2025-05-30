@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import mne
 from datetime import datetime
+import os
 
 class DeepSleepNetBinary(nn.Module):
     def __init__(self, input_len=3000, cnn_feat_dim=128, lstm_hidden=128, seq_len=20):
@@ -97,17 +98,23 @@ fs = 100
 seq_len = 5
 epoch_sec = 30
 input_len = epoch_sec * fs    
-model_weight_path = '/Users/lejieliu/Documents/CS189/lucid-dreaming-core/models/alertness_torch_weights_salt.pth'
 
+# Get the absolute path to the current file's directory (lucid-dreaming-core)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+model_weight_path = os.path.join(BASE_DIR, 'models', 'alertness_torch_weights_salt.pth')
 model = DeepSleepNetBinary(input_len=3000, seq_len=seq_len)
 model.load_state_dict(torch.load(model_weight_path, map_location='cpu'))
 model.eval()
 
-rem_model_weight_path = '/Users/lejieliu/Documents/CS189/lucid-dreaming-core/models/rem_torch_weights.pth'
+rem_model_weight_path = os.path.join(BASE_DIR, 'models', 'rem_torch_weights.pth')
 rem_seq_len = 1
 rem_model = DeepSleepNetBinary(input_len=3000, seq_len=rem_seq_len)
 rem_model.load_state_dict(torch.load(rem_model_weight_path, map_location='cpu'))
 rem_model.eval()
+
+# Set mne logging level to ERROR
+mne.set_log_level('ERROR')
 
 def predict_is_rem(eeg_raw, ema_span = 5):
     if not hasattr(predict_is_rem, "rem_history"):
