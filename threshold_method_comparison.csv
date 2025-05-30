@@ -1,0 +1,5 @@
+Method,Threshold,Global_FPR,Global_TPR,Global_Precision,Mean_FPR,Mean_TPR,Mean_Precision,Nights_Detected,Use_Case
+FPR < 10%,0.5449,10.0%,50.8%,45.4%,9.6%,42.1%,42.1%,18/20,"Balanced detection, 10% false positive rate"
+FPR < 5%,0.7786,5.0%,30.4%,49.9%,4.7%,24.8%,45.2%,17/20,"Conservative detection, 5% false positive rate"
+70% Confidence,0.4382,12.4%,59.7%,44.0%,12.0%,49.7%,40.9%,18/20,"Moderate confidence, higher sensitivity"
+80% Confidence,0.6131,8.4%,45.2%,46.7%,8.1%,37.4%,43.9%,18/20,"High confidence, balanced performance"
