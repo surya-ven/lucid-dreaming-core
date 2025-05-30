@@ -78,8 +78,8 @@ METADATA_FILENAME = "session_metadata.npz"
 
 # --- Audio Cue Configuration ---
 # Construct absolute path for the audio cue file
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-AUDIO_CUE_FILE_PATH = "/Users/lejieliu/Documents/CS189/lucid-dreaming-core/app/audio_cue.mp3"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+AUDIO_CUE_FILE_PATH = os.path.join(BASE_DIR, "audio_cue.mp3")
 MAX_SUCCESSIVE_REM_CUES = 2
 TEST_AUDIO_CUE_SUCCESSIVE_PLAYS = 3
 REM_SLEEP_STAGE_VALUE = 3
