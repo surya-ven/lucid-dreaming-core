@@ -401,14 +401,20 @@ async def real_time_processing_loop():
                 new_filt_eeg = f_eeg_all[:, -new_n_samples:]
 
                 r_eeg_all = streamer_instance.DATA["RAW"]["EEG"]
+                print(f"f_eeg.shape {f_eeg_all.shape}")
+                print(f"f_eeg after.shape {f_eeg_all.T.shape}")
+                print(f"f_eeg after.shape {f_eeg_all[:, :].T.shape}")
+                raw_data = r_eeg_all[:, [0, 1, 3, 4]].T * 1e-8
+                print(f"correct shape{raw_data.shape}")
                 if r_eeg_all is not None and r_eeg_all.ndim == 2 and r_eeg_all.shape[1] == 6 and r_eeg_all.shape[0] >= new_n_samples:
                     new_raw_eeg_T = r_eeg_all[-new_n_samples:, :].T
                     
                     # compute alertness
                     if (current_time - last_alert_time) >= 1 and r_eeg_all.shape[0] > 0:
                         last_alert_time = current_time
-                        if len(r_eeg_all) >= needed_len:
+                        if len(f_eeg_all[0]) >= needed_len:
                             raw_data = r_eeg_all[:, [0, 1, 3, 4]].T * 1e-8
+                            raw_data = f_eeg_all
                             eeg_raw_for_pred = raw_data[:, -int(needed_len):]  
                             score_ewm = predict_alertness_ema(eeg_raw_for_pred)
                             last_alertness = score_ewm
@@ -421,7 +427,7 @@ async def real_time_processing_loop():
                             
                     if (current_time - last_detect_rem_time) >= 1 and r_eeg_all.shape[0] > 0:
                         last_detect_rem_time = time.time()
-                        if len(r_eeg_all) >= needed_len:
+                        if len(f_eeg_all[0]) >= needed_len:
                             raw_data = r_eeg_all[:, [0, 1, 3, 4]].T * 1e-8
                             eeg_raw_for_pred = raw_data[:, -int(needed_len):]  
                             rem_prob = predict_is_rem(eeg_raw_for_pred)
@@ -429,8 +435,15 @@ async def real_time_processing_loop():
                             if score_ewm < 0.5 and rem_prob > 0.75 and current_time - last_cue_triger_time > 180:
                                 log_session_info(f"trigger audio cue because it's under rem session, and alertness is lower than threshold", session_data_path)
                                 last_cue_triger_time = time.time()
-                                asyncio.create_task(
-                                            fire_rem_audio_cues_sequence())
+
+                                current_time = time.time()  # Capture time before playing
+                                # Play sound
+                                sound = AudioSegment.from_file(AUDIO_CUE_FILE_PATH)
+                                await run_in_threadpool(play, sound)
+                                # await run_in_threadpool(playsound, AUDIO_CUE_FILE_PATH)
+                                log_session_info(
+                                    f"REM audio cue initiated successfully at {current_time}. Playback started.", session_data_path)
+
 
                 else:
                     new_raw_eeg_T = np.full(
