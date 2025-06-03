@@ -1,33 +1,36 @@
 import time
 import os
+import traceback
 
 import numpy as np
 import tensorflow as tf
+import matplotlib.pyplot as plt
 from scipy.signal import butter, filtfilt, medfilt
-
+from datetime import datetime, timedelta
+plt.rcParams['toolbar'] = 'None'
 
 rec_data_names = [
-    "v2_LRLR_once_3_mix", ## NOTE I included mix here even though it is eyes open because it is not trained on
-    "v2_LRLR_once_4_mix",
-    "v2_LRLR_once_5_mix",
-    "v2_LRLR_once_6_closed",
-    "v2_LRLR_once_7_closed",
-    "v2_LRLR_once_8_closed",
-    "20250523_183954_966852", #LRLR ? 
-    "20250523_192852_995272", #LRLR x1
-    "20250523_193034_228556", #LRLR x4
+    # "v2_LRLR_once_3_mix", ## NOTE I included mix here even though it is eyes open because it is not trained on
+    # "v2_LRLR_once_4_mix",
+    # "v2_LRLR_once_5_mix",
+    # "v2_LRLR_once_6_closed",
+    # "v2_LRLR_once_7_closed",
+    # "v2_LRLR_once_8_closed",
+    # "20250523_183954_966852", #LRLR ? 
+    # "20250523_192852_995272", #LRLR x1
+    # "20250523_193034_228556", #LRLR x4
     "20250523_193526_401634", #LRLR x4
-    "20250523_194915_602917", #LRLR x4
-    "20250523_200210_295876", #LRLR x4
-    "20250524_015512_029025", #LRLR x9
-    "20250524_020422_208890", #LRLR x12
-    "20250524_022100_630075", #LRLR x12
-    "20250524_033027_138563", #LRLR x9
-    "20250524_033637_296315", #LRLR x7
+    # "20250523_194915_602917", #LRLR x4
+    # "20250523_200210_295876", #LRLR x4
+    # "20250524_015512_029025", #LRLR x9
+    # "20250524_020422_208890", #LRLR x12
+    # "20250524_022100_630075", #LRLR x12
+    # "20250524_033027_138563", #LRLR x9
+    # "20250524_033637_296315", #LRLR x7
 ]
 
 
-BEST_MODEL_PATH = 'models/lrlr_conv1d_model_fold__final_all_data.keras'
+BEST_MODEL_PATH = 'models/lrlr_conv1d_model_fold__final_all_data_v2.keras'
 
 
 MODEL_THRESHOLD_BEST = 0.4039 # Threshold for best model to classify LRLR as True
@@ -385,5 +388,279 @@ def test1():
         print(f"Max value of last 750 target events: {np.max(last_750):.4f}")
         print('\n')
 
+
+def plot_lrlr_detection_timeline(filepath, window_size_samples=750, step_size_samples=250, 
+                               threshold_mode='balanced', show_plot=True, save_path=None):
+    """
+    Create a timeline plot of LRLR detection across the duration of a session.
+    
+    This function analyzes the entire session using sliding windows and plots
+    LRLR detection scores over time using the trained CNN model.
+    
+    Args:
+        filepath (str): Name of the data file to analyze (from rec_data_names)
+        window_size_samples (int): Size of analysis windows in samples (default: 750)
+        step_size_samples (int): Step size between windows in samples (default: 250, 33% overlap on each side)
+        threshold_mode (str): Detection threshold mode ('best', '90', '95')
+        show_plot (bool): Whether to display the plot (default: True)
+        save_path (str or None): Path to save the plot figure
+    
+    Returns:
+        dict: Analysis results containing timeline data and detection results
+    """
+    print(f"🕐 Creating LRLR Detection Timeline for {filepath}...")
+    
+    # Load Data
+    SESSION_FOLDER_PATH = f"recorded_data/{filepath}"
+    loaded_data, session_metadata = load_custom_data(SESSION_FOLDER_PATH)
+    if loaded_data is None or session_metadata is None:
+        print("Failed to load data or metadata. Exiting.")
+        return None
+    
+    # Extract EOG data (last 4 columns)
+    eog_data = loaded_data[:, -4:]
+    target_event = loaded_data[:, 1]  # Ground truth LRLR events
+    
+    # Extract sampling rate from session metadata
+    srate = session_metadata.get('sample_rate', 118)  # Default to 118 Hz
+    
+    # Set threshold based on mode
+    threshold_map = {
+        'best': MODEL_THRESHOLD_BEST,
+        '90': MODEL_THRESHOLD_90, 
+        '95': MODEL_THRESHOLD_95
+    }
+    detection_threshold = threshold_map.get(threshold_mode, MODEL_THRESHOLD_90)
+    
+    print(f"📊 Session info:")
+    print(f"   • Data shape: {eog_data.shape}")
+    print(f"   • Sampling rate: {srate} Hz")
+    print(f"   • Window size: {window_size_samples} samples ({window_size_samples/srate:.2f} seconds)")
+    print(f"   • Step size: {step_size_samples} samples ({step_size_samples/srate:.2f} seconds)")
+    print(f"   • Threshold mode: {threshold_mode} (threshold = {detection_threshold:.4f})")
+    
+    # Calculate timeline parameters
+    total_samples = eog_data.shape[0]
+    session_duration_seconds = total_samples / srate
+    
+    # Calculate number of windows
+    num_windows = max(1, (total_samples - window_size_samples) // step_size_samples + 1)
+    
+    # Initialize arrays for results
+    timeline_seconds = []
+    lrlr_scores = []
+    lrlr_detections = []
+    ground_truth_avg = []
+    
+    print(f"📈 Analyzing {num_windows} windows...")
+    
+    # Process each window
+    for i in range(num_windows):
+        start_idx = i * step_size_samples
+        end_idx = start_idx + window_size_samples
+        
+        # Ensure we don't exceed data bounds
+        if end_idx > total_samples:
+            end_idx = total_samples
+            start_idx = max(0, end_idx - window_size_samples)
+        
+        # Extract window data
+        window_eog = eog_data[start_idx:end_idx, :]
+        window_target = target_event[start_idx:end_idx]
+        
+        # Calculate window center time
+        center_time_seconds = (start_idx + end_idx) / 2 / srate
+        timeline_seconds.append(center_time_seconds)
+        
+        # Run LRLR detection
+        try:
+            is_lrlr, lrlr_score = detect_lrlr_window_FINAL_MODEL(
+                window_eog, 
+                srate=srate, 
+                model_path=BEST_MODEL_PATH, 
+                detection_threshold=detection_threshold
+            )
+            
+            lrlr_scores.append(lrlr_score)
+            lrlr_detections.append(is_lrlr)
+            
+            # Calculate ground truth for this window (average of target events)
+            window_ground_truth = np.mean(window_target)
+            ground_truth_avg.append(window_ground_truth)
+            
+        except Exception as e:
+            print(f"Error processing window {i}: {e}")
+            lrlr_scores.append(0.0)
+            lrlr_detections.append(False)
+            ground_truth_avg.append(0.0)
+    
+    # Convert to numpy arrays
+    timeline_seconds = np.array(timeline_seconds)
+    timeline_minutes = timeline_seconds / 60
+    lrlr_scores = np.array(lrlr_scores)
+    lrlr_detections = np.array(lrlr_detections)
+    ground_truth_avg = np.array(ground_truth_avg)
+    
+    # Calculate session summary
+    session_summary = {
+        'total_windows_analyzed': len(lrlr_scores),
+        'lrlr_windows_detected': np.sum(lrlr_detections),
+        'lrlr_percentage': (np.sum(lrlr_detections) / len(lrlr_detections)) * 100 if len(lrlr_detections) > 0 else 0,
+        'mean_lrlr_score': np.mean(lrlr_scores),
+        'max_lrlr_score': np.max(lrlr_scores),
+        'threshold_used': detection_threshold,
+        'threshold_mode': threshold_mode,
+        'session_duration_minutes': session_duration_seconds / 60,
+        'ground_truth_events': np.sum(target_event),
+        'ground_truth_percentage': (np.sum(target_event) / len(target_event)) * 100
+    }
+    
+    print(f"✅ Timeline analysis complete!")
+    print(f"📈 LRLR Detection Summary:")
+    print(f"   • Total LRLR windows detected: {session_summary['lrlr_windows_detected']}/{session_summary['total_windows_analyzed']}")
+    print(f"   • LRLR detection percentage: {session_summary['lrlr_percentage']:.1f}%")
+    print(f"   • Mean LRLR score: {session_summary['mean_lrlr_score']:.3f}")
+    print(f"   • Max LRLR score: {session_summary['max_lrlr_score']:.3f}")
+    print(f"   • Ground truth events: {session_summary['ground_truth_events']} ({session_summary['ground_truth_percentage']:.2f}%)")
+    
+    # Create the plot
+    if show_plot or save_path:
+        create_lrlr_timeline_plot(
+            timeline_minutes, lrlr_scores, lrlr_detections, ground_truth_avg,
+            session_summary, filepath, detection_threshold, 
+            show_plot, save_path
+        )
+    
+    return {
+        'timeline_minutes': timeline_minutes,
+        'timeline_seconds': timeline_seconds,
+        'lrlr_scores': lrlr_scores,
+        'lrlr_detections': lrlr_detections,
+        'ground_truth_avg': ground_truth_avg,
+        'session_summary': session_summary
+    }
+
+
+def create_lrlr_timeline_plot(timeline_minutes, lrlr_scores, lrlr_detections, ground_truth_avg,
+                            session_summary, filepath, threshold, show_plot=True, save_path=None):
+    """
+    Create the actual timeline plot visualization for LRLR detection.
+    """
+    # Set up the plot
+
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(15, 10))
+    thr = session_summary["threshold_mode"] if session_summary["threshold_mode"] != 'best' else 'Best AUC'
+    fig.suptitle(f'LRLR Detection Timeline - {filepath}\nThreshold: {thr} ({threshold:.2f})', 
+                 fontsize=16, fontweight='bold')
+    
+    # Top subplot: LRLR detection scores over time
+    ax1.plot(timeline_minutes, lrlr_scores, 'b-', linewidth=1.5, alpha=0.7, label='LRLR Score')
+    
+    # Highlight LRLR detection periods
+    detection_mask = lrlr_detections
+    ax1.fill_between(timeline_minutes, 0, lrlr_scores, where=detection_mask, 
+                     alpha=0.3, color='red', label='LRLR Detected')
+    
+    # Add threshold line
+    ax1.axhline(y=threshold, color='orange', linestyle='--', alpha=0.8, 
+                label=f'Detection Threshold ({threshold:.3f})')
+    
+    ax1.set_ylabel('LRLR Score', fontsize=12)
+    ax1.set_ylim(0, 1)
+    ax1.grid(True, alpha=0.3)
+    ax1.legend()
+    ax1.set_title('LRLR Detection Scores Over Time', fontsize=14)
+    
+    # Middle subplot: Binary LRLR detection
+    ax2.fill_between(timeline_minutes, 0, lrlr_detections.astype(int),
+                     step='post', alpha=0.6, color='red', label='LRLR Detected')
+    ax2.set_ylabel('LRLR Detection\n(Binary)', fontsize=12)
+    ax2.set_ylim(-0.1, 1.1)
+    ax2.set_yticks([0, 1])
+    ax2.set_yticklabels(['No', 'Yes'])
+    ax2.grid(True, alpha=0.3)
+    ax2.legend()
+    ax2.set_title('LRLR Detection Timeline (Binary)', fontsize=14)
+    
+    # Bottom subplot: Ground truth LRLR events
+    ax3.fill_between(timeline_minutes, 0, ground_truth_avg,
+                     step='post', alpha=0.6, color='green', label='Ground Truth LRLR')
+    ax3.set_ylabel('Ground Truth\nLRLR Events\n(Average)', fontsize=12)
+    ax3.set_ylim(0, max(1, np.max(ground_truth_avg) * 1.1))
+    ax3.grid(True, alpha=0.3)
+    ax3.legend()
+    ax3.set_title('Ground Truth LRLR Events (Window Average)', fontsize=14)
+    ax3.set_xlabel('Time (minutes)', fontsize=12)
+    
+    # Add session summary text
+    summary_text = (
+        f"Session: {session_summary['session_duration_minutes']:.1f} min\n"
+        f"LRLR Detected: {session_summary['lrlr_windows_detected']}/{session_summary['total_windows_analyzed']} windows ({session_summary['lrlr_percentage']:.1f}%)\n"
+        f"Ground Truth: {session_summary['ground_truth_events']} events ({session_summary['ground_truth_percentage']:.2f}%)\n"
+        f"Mean Score: {session_summary['mean_lrlr_score']:.3f}, Max: {session_summary['max_lrlr_score']:.3f}"
+    )
+    
+    # Add text box with summary
+    ax1.text(0.02, 0.98, summary_text, transform=ax1.transAxes, 
+             bbox=dict(boxstyle="round,pad=0.3", facecolor="lightblue", alpha=0.8),
+             verticalalignment='top', fontsize=10)
+    
+    plt.tight_layout()
+    
+    # Save plot if requested
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"📸 Plot saved to: {save_path}")
+    
+    # Show plot if requested
+    if show_plot:
+        plt.show()
+    else:
+        plt.close(fig)
+
+
+def test_lrlr_timeline_detection(target_file):
+    """
+    Test the LRLR detection timeline plotting function on the specified data file.
+    """
+    
+    print(f"=== Testing LRLR Detection Timeline ===")
+    print(f"Target file: {target_file}")
+    
+    # Test with different threshold modes
+    threshold_modes = ['90', 'best', '95']
+    # threshold_modes = ['90']
+
+    
+    for mode in threshold_modes:
+        print(f"\n🎯 Testing with {mode} threshold mode...")
+        
+        # Generate save path
+        save_path = f"lrlr_timeline_{target_file}_{mode}_threshold.png"
+        
+        # Create timeline plot
+        results = plot_lrlr_detection_timeline(
+            filepath=target_file,
+            window_size_samples=750,
+            step_size_samples=250,  # 33% overlap on each side
+            threshold_mode=mode,
+            show_plot=True,
+            save_path=save_path
+        )
+        
+        if results is not None:
+            print(f"✅ Timeline plot completed for {mode} threshold mode")
+        else:
+            print(f"❌ Failed to create timeline plot for {mode} threshold mode")
+
+
 if __name__ == "__main__":
-    test1()
+    # Run the original test function
+    # test1()
+    
+    # Run the LRLR timeline detection test
+    for file in rec_data_names:
+        print(f"Testing LRLR detection timeline for file: {file}")
+        test_lrlr_timeline_detection(file)
+
+print('\n')
