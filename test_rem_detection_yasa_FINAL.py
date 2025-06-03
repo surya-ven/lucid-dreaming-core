@@ -1050,6 +1050,7 @@ def test_timeline_detection():
     try:
         # Load sleep session data
         sleep_data_path = "recorded_data/liu_sleep/1748599265.051497/eeg.dat"
+        # sleep_data_path = "recorded_data/liu_sleep/v2_LRLR_once_7_closed/eeg.dat"
         print("📂 Loading sleep session data...")
         
         # Extract session start time from filepath
