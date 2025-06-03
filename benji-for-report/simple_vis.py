@@ -612,15 +612,15 @@ def testmydat():
         # Extract data for visualization including horizontal difference calculation
         eog_data_viz = loaded_data[viz_start:viz_end, [6, 8]]  # Left and right EOG channels for viz
         # Calculate horizontal difference (L-R) and add as third column
-        processed_eog_data = CURRENT_process_eog_for_plotting(eog_data_viz, srate=125,
-                                                              lowcut=0.5, highcut=4.0, 
-                                                              artifact_threshold=500, mft_kernel_size=5)
-        horizontal_diff = processed_eog_data[:, 0] - processed_eog_data[:, 1]
-        eog_data_viz_with_diff = np.column_stack([processed_eog_data, horizontal_diff])
+        # processed_eog_data = CURRENT_process_eog_for_plotting(eog_data_viz, srate=125,
+        #                                                       lowcut=0.5, highcut=4.0, 
+        #                                                       artifact_threshold=500, mft_kernel_size=5)
+        # horizontal_diff = processed_eog_data[:, 0] - processed_eog_data[:, 1]
+        # eog_data_viz_with_diff = np.column_stack([processed_eog_data, horizontal_diff])
         target_events_viz = loaded_data[viz_start:viz_end, 1]  # Target events for viz
         
         print(f"Full processing EOG data shape: {eog_data_full.shape}")
-        print(f"Visualization EOG data shape (with diff): {eog_data_viz_with_diff.shape}")
+        # print(f"Visualization EOG data shape (with diff): {eog_data_viz_with_diff.shape}")
         print(f"Full processing target events shape: {target_events_full.shape}")
         print(f"Visualization target events shape: {target_events_viz.shape}")
         print(f"Column names: {session_metadata['processed_column_names'][6:10]}")
@@ -630,10 +630,10 @@ def testmydat():
         save_filename = f"processing_compare_{subject_name.lower()}.png"
 
         # Plot EOG with LRLR detection using the data with horizontal difference
-        plot_eog_with_lrlr_detection(eog_data_viz_with_diff, session_metadata, colstart=0, colend=3,
-                                       target_event=target_events_viz, 
-                                       title=f"{subject_name} EOG Data with LRLR Detection",
-                                       srate=125)
+        # plot_eog_with_lrlr_detection(eog_data_viz_with_diff, session_metadata, colstart=0, colend=3,
+        #                                target_event=target_events_viz, 
+        #                                title=f"{subject_name} EOG Data with LRLR Detection",
+        #                                srate=125)
 
         compare_preprocessing_techniques(eog_data_viz, srate=125, 
                                        target_event=target_events_viz,
