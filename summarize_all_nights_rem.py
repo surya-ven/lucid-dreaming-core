@@ -8,6 +8,24 @@ matplotlib.use('Agg')
 # Load the results
 df = pd.read_csv('all_nights_rem_analysis.csv')
 
+# Add 95% confidence threshold analysis
+df['high_confidence_threshold'] = 0.95
+df['high_conf_predicted'] = (df['mean_rem_probability'] >= 0.95).astype(int) * df['rem_epochs_total']
+df['high_conf_tp'] = np.minimum(df['high_conf_predicted'], df['rem_epochs_total'])
+df['high_conf_fp'] = df['high_conf_predicted'] - df['high_conf_tp']
+df['high_conf_fn'] = df['rem_epochs_total'] - df['high_conf_tp']
+df['high_conf_tn'] = df['total_epochs'] - df['rem_epochs_total'] - df['high_conf_fp']
+
+# Calculate metrics for 95% confidence threshold
+df['high_conf_precision'] = np.where(df['high_conf_predicted'] > 0, 
+                                     df['high_conf_tp'] / df['high_conf_predicted'], 0)
+df['high_conf_recall'] = np.where(df['rem_epochs_total'] > 0,
+                                  df['high_conf_tp'] / df['rem_epochs_total'], 0)
+df['high_conf_accuracy'] = (df['high_conf_tp'] + df['high_conf_tn']) / df['total_epochs']
+df['high_conf_f1'] = np.where((df['high_conf_precision'] + df['high_conf_recall']) > 0,
+                              2 * df['high_conf_precision'] * df['high_conf_recall'] / 
+                              (df['high_conf_precision'] + df['high_conf_recall']), 0)
+
 print("=== REM Detection Analysis Across All 20 Nights ===")
 print(f"Total nights analyzed: {len(df)}")
 print(f"Total recording time: {df['duration_hours'].sum():.1f} hours")

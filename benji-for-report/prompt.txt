@@ -1,0 +1,23 @@
+This is a file that visualizes eog data from a device test. 
+
+We have two segments of data that each have a clear LRLR (eye movement signal) pattern marked out in the targed_event vector (which is a binary 0 to 1). These two datafiles (rec_data_name_surya & rec_data_name_benji) correspond to two different people performing lrlr with eyes closed. The plot has the left channel, right channel (LF_FpZ, RF_FpZ) and the horizontal difference between them.
+
+We have tried to visualize the data to see the distinct LRLR movement pattern. We failed. Whatever processing schema we used, we couldn't get it to work. We want to visualize the data with different types of filtering/thresholds/etc and compare the results. 
+
+Turn the lrlr detection plot into a collection of plots showcasing the various filtering & preprocessing techniques we explored. Look at CURRENT_process_eog_for_plotting and alternative_process_eog_for_plotting. Explore different paramaters and using different features. Try nothing. Try no band-pass, from 0.1-40, 0.5-4, and more if appropriate. Try no artifact removal, with thresholding at 1000, 500, 100. With or without linear interpolation. Try the commented out ICA. Try some elements of the alternative processing function.
+
+After exploring, select 10 plots to use as visuals/examples. Plot them, clearly labeling the different preprocessing decisions, and save them to the file processing_compare.png. 
+
+# Notes
+-for the 10 array plots, remove the LF and RF channels. They will clutter too much up.
+-pick a good distribution of plots.
+
+
+
+
+
+
+
+[This should be accomplished in two steps.
+
+1) Make the plot in much better detail. Label everything properly, including clear vertical lines and text to mark the beginning and end of the LRLR segment. Use proper timestamps throughout (it's written as a unix date, each event should last roughly 10-20 seconds). Combine the three plots onto the same chart, keeping Hdiff in black and making the two other less prominent.]

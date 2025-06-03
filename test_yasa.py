@@ -6,16 +6,55 @@ import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend for headless environments
 
+
+
+
+def load_process_eeg_datafile(session_folder_path):
+    channel_eeg = 6
+
+    # Load the recorded session from your experiment folder
+    memmap_eeg_data = np.memmap(session_folder_path, dtype=np.float64, mode='r')
+    l_eeg = int(len(memmap_eeg_data)//channel_eeg)
+
+    # EEG DATA
+    # Reshape the data into a 2D array
+    # l_eeg is the number of samples in the eeg data
+    # channel_eeg is the number of channels in the eeg data
+    eeg_data = np.array(memmap_eeg_data)[:l_eeg*channel_eeg].reshape((l_eeg, channel_eeg))
+    raw_data = eeg_data[:, [0, 1, 3, 4]].T * 1e-8
+
+    channel_names = ['LF-FpZ', 'OTE_L-FpZ', 'RF-FpZ', 'OTE_R-FpZ']
+    sfreq = 125 
+
+    info = mne.create_info(
+        ch_names=channel_names,
+        sfreq=sfreq,
+        ch_types=["eeg"] * len(channel_names)
+    )
+
+    raw = mne.io.RawArray(raw_data, info)
+    raw.pick_channels(channel_names)
+
+    raw.filter(0.5,40)
+    raw.notch_filter(60)
+    return raw
+    
+
+
 # Load the EDF file
-raw_filepath = "provided_data/night_01.edf"
-raw = mne.io.read_raw_edf(raw_filepath, preload=True, verbose=False)
+raw_edf_filepath = "provided_data/night_01.edf"
+raw_dat_filepath = "recorded_data/liu_sleep/1748599265.051497/eeg.dat"
+
+# raw = mne.io.read_raw_edf(raw_edf_filepath, preload=True, verbose=False)
+raw = load_process_eeg_datafile(raw_dat_filepath)
+
 
 print('Available channels:', raw.ch_names)
 print('Sampling frequency:', raw.info['sfreq'])
 
 # Channel mapping - your channels roughly correspond to:
 # 'LF–FpZ' -> Fp1 (left frontal)
-# 'OTE_L–FpZ' -> T3 (left temporal) 
+# 'OTE_L–FpZ' -> T3 (left temporal)
 # 'RF–FpZ' -> Fp2 (right frontal)
 # 'OTE_R–FpZ' -> T4 (right temporal)
 
