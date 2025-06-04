@@ -1,5 +1,8 @@
 # CS189 - Applied AI for Wearable Neurotech
 
+## Note
+The bulk of our experiments and scripts are under the  `experiments` folder, `app` contains our main system and real-time application code, and `test_algorithm.ipynb` contains code for testing the system offline via simulation.
+
 ## Requirements
 
 Please install uv.
