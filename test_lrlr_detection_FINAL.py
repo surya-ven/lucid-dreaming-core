@@ -31,9 +31,10 @@ rec_data_names = [
 BEST_MODEL_PATH = 'models/lrlr_conv1d_model_fold__final_all_data.keras'
 
 
+# Note that these thresholds were calibrated for the model developer and may not be optimal for all users. 
 MODEL_THRESHOLD_BEST = 0.4039  # Threshold for best model to classify LRLR as True
-MODEL_THRESHOLD_90 = 0.5575  # Threshold for best model to classify LRLR as True
-MODEL_THRESHOLD_95 = 0.5894  # Threshold for best model to classify LRLR as True
+MODEL_THRESHOLD_90 = 0.5575  # Threshold for LRLR specificity >=90% (default)
+MODEL_THRESHOLD_95 = 0.5894  # Threshold for LRLR specificity >=95%
 
 
 MODEL_SAMPLE_LENGTH = 750
@@ -315,7 +316,7 @@ def _preprocess_input_for_model(data_segment_raw, model_srate_for_filter=118, mf
     return normalized_data
 
 
-def detect_lrlr_window_FINAL_MODEL(eog_data, srate, model_path=BEST_MODEL_PATH, detection_threshold=MODEL_THRESHOLD_BEST):
+def detect_lrlr_window_FINAL_MODEL(eog_data, srate, model_path=BEST_MODEL_PATH, detection_threshold=MODEL_THRESHOLD_90):
     """
     Detects LRLR patterns using the trained model.
 
