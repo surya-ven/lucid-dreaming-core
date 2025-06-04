@@ -19,4 +19,5 @@ dependencies = [
     "frenztoolkit>=0.2.3",
     "torch>=2.7.0",
     "pydub>=0.25.1",
+    "matplotlib-inline>=0.1.7",
 ]
