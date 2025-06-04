@@ -1,6 +1,8 @@
 # Conv1D Model - Comprehensive Classification Report
 
 **Generated:** 2025-06-03 12:25:55
+**Details:** YASA sleep stage model adapted and applied to 20 nights of frenz data as binary REM classifier.
+
 
 ## Model Overview
 
