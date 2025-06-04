@@ -1,4 +1,4 @@
-# Project README (CS189 - Applied AI for Wearable Neurotech)
+# CS189 - Applied AI for Wearable Neurotech
 
 ## Requirements
 
